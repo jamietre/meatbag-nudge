@@ -4,12 +4,12 @@ set -euo pipefail
 INSTALL_DIR="${HOME}/.local/bin"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
 BINARY_NAME="claude-notify"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO="jamietre/meatbag-nudge"
 
 # Detect platform
 case "$(uname -s)" in
-    MSYS*|MINGW*|CYGWIN*) EXE_EXT=".exe" ;;
-    *)                     EXE_EXT="" ;;
+    MSYS*|MINGW*|CYGWIN*) EXE_EXT=".exe"; PLATFORM="windows" ;;
+    *)                     EXE_EXT="";     PLATFORM="linux"   ;;
 esac
 
 usage() {
@@ -19,7 +19,8 @@ usage() {
     echo "  --dir <path>    Install directory (default: ~/.local/bin)"
     echo "  --no-hooks      Skip adding hooks to settings.json"
     echo "  --defaults      Skip interactive config, use defaults"
-    echo "  --uninstall     Remove binary, sounds, and hooks"
+    echo "  --build         Build from source instead of downloading a release"
+    echo "  --uninstall     Remove binary and hooks"
     echo "  --help          Show this help"
 }
 
@@ -117,15 +118,106 @@ remove_hooks() {
     echo "Hooks removed from $SETTINGS_FILE"
 }
 
+build_from_source() {
+    local script_dir
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+
+    if ! command -v cargo &>/dev/null; then
+        echo "ERROR: cargo not found. Install the Rust toolchain:"
+        echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+        echo "  or: mise use -g rust@latest"
+        exit 1
+    fi
+
+    echo "Building from source..."
+    cd "$script_dir"
+    cargo build --release
+    local built="target/release/${BINARY_NAME}${EXE_EXT}"
+    if [ ! -f "$built" ]; then
+        echo "ERROR: Build succeeded but binary not found at $built"
+        exit 1
+    fi
+    echo "$script_dir/$built"
+}
+
+download_release() {
+    local downloader=""
+    if command -v curl &>/dev/null; then
+        downloader="curl"
+    elif command -v wget &>/dev/null; then
+        downloader="wget"
+    else
+        echo "ERROR: curl or wget is required to download releases."
+        exit 1
+    fi
+
+    # Fetch the latest release tag
+    local api_url="https://api.github.com/repos/${REPO}/releases/latest"
+    local release_json
+    if [ "$downloader" = "curl" ]; then
+        release_json=$(curl -fsSL "$api_url")
+    else
+        release_json=$(wget -qO- "$api_url")
+    fi
+
+    local tag
+    tag=$(echo "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    if [ -z "$tag" ]; then
+        echo "ERROR: Could not determine latest release tag. Check your internet connection"
+        echo "or visit https://github.com/${REPO}/releases to download manually."
+        exit 1
+    fi
+
+    echo "Latest release: $tag"
+
+    # Pick the right asset
+    local asset_name
+    if [ "$PLATFORM" = "windows" ]; then
+        asset_name="claude-notify-windows-x86_64.zip"
+    else
+        asset_name="claude-notify-linux-x86_64.tar.gz"
+    fi
+
+    local download_url="https://github.com/${REPO}/releases/download/${tag}/${asset_name}"
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local archive="${tmp_dir}/${asset_name}"
+
+    echo "Downloading $asset_name..."
+    if [ "$downloader" = "curl" ]; then
+        curl -fsSL -o "$archive" "$download_url"
+    else
+        wget -qO "$archive" "$download_url"
+    fi
+
+    # Extract
+    if [[ "$asset_name" == *.tar.gz ]]; then
+        tar -xzf "$archive" -C "$tmp_dir"
+    else
+        unzip -q "$archive" -d "$tmp_dir"
+    fi
+
+    local binary="${tmp_dir}/${BINARY_NAME}${EXE_EXT}"
+    if [ ! -f "$binary" ]; then
+        echo "ERROR: Binary not found in archive. Contents:"
+        ls "$tmp_dir"
+        exit 1
+    fi
+
+    echo "$binary"
+}
+
 # Parse args
 NO_HOOKS=false
 USE_DEFAULTS=false
 UNINSTALL=false
+BUILD=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dir)       INSTALL_DIR="$2"; shift 2 ;;
         --no-hooks)  NO_HOOKS=true; shift ;;
         --defaults)  USE_DEFAULTS=true; shift ;;
+        --build)     BUILD=true; shift ;;
         --uninstall) UNINSTALL=true; shift ;;
         --help)      usage; exit 0 ;;
         *)           echo "Unknown option: $1"; usage; exit 1 ;;
@@ -143,21 +235,20 @@ cat <<'BANNER'
   fires — a louder sound and screen flash to get your attention.
   When you interact (submit a prompt, approve a tool), the pending
   escalation is cancelled. A cooldown period suppresses repeated
-  sounds while you're actively working; it won't make a sounds if
-  there as an interaction within the cooldown period.
+  sounds while you're actively working; it won't make a sound if
+  there was an interaction within the cooldown period.
 
-  claude-meatbag-nudge will also detect when a process is complete, 
+  claude-meatbag-nudge will also detect when a process is complete,
   e.g. claude's response ends with a "." instead of a "?". In that case,
   you'll get the usual notification, but it won't escalate.
 
   By default, system sounds are used (Windows Media sounds on Windows,
-  freedesktop/ALSA sounds on Linux). You can override sounds via
-  --sound / --escalation-sound flags or environment variables.
-  Place custom sounds in ~/.local/bin/sounds/ as notification.wav
-  and escalation.wav to use them automatically.
+  freedesktop/ALSA sounds on Linux). Place custom sounds in
+  ~/.local/bin/sounds/ as notification.wav and escalation.wav to
+  override them.
 
   This installer will:
-    1. Build the claude-notify binary from source (requires Rust)
+    1. Download the latest release binary from GitHub (or build from source with --build)
     2. Copy the binary to ~/.local/bin/
     3. Add notification hooks to ~/.claude/settings.json (requires jq)
 
@@ -171,54 +262,11 @@ if $UNINSTALL; then
     exit 0
 fi
 
-# Check dependencies
-missing=()
-if ! command -v cargo &>/dev/null; then
-    missing+=("cargo (Rust toolchain)")
-fi
-if ! command -v jq &>/dev/null; then
-    missing+=("jq (JSON processor)")
-fi
-case "$(uname -s)" in
-    MSYS*|MINGW*|CYGWIN*)
-        if ! find "/c/Program Files/Microsoft Visual Studio" -name "link.exe" -path "*/Hostx64/x64/*" 2>/dev/null | grep -q .; then
-            missing+=("MSVC C++ build tools (link.exe)")
-        fi
-        ;;
-esac
-if [ ${#missing[@]} -gt 0 ]; then
-    echo "Missing required tools:"
-    for tool in "${missing[@]}"; do
-        echo "  - $tool"
-    done
-    echo ""
-    echo "Install them with:"
-    echo "  Rust:  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-    echo "         or: mise use -g rust@latest"
-    case "$(uname -s)" in
-        Linux*)
-            echo "  jq:    sudo apt install jq"
-            ;;
-        Darwin*)
-            echo "  jq:    brew install jq"
-            ;;
-        MSYS*|MINGW*|CYGWIN*)
-            echo "  jq:    pacman -S jq"
-            echo "  MSVC:  Open Visual Studio Installer → Modify →"
-            echo "         check 'Desktop development with C++' → Install"
-            ;;
-    esac
-    exit 1
-fi
-
-# Build
-echo "Building..."
-cd "$SCRIPT_DIR"
-cargo build --release
-BUILT="target/release/${BINARY_NAME}${EXE_EXT}"
-if [ ! -f "$BUILT" ]; then
-    echo "ERROR: Build succeeded but binary not found at $BUILT"
-    exit 1
+# Get the binary
+if $BUILD; then
+    binary_path=$(build_from_source)
+else
+    binary_path=$(download_release)
 fi
 
 # Install binary
@@ -227,7 +275,7 @@ mkdir -p "$INSTALL_DIR"
 if [ -f "$BINARY" ]; then
     mv "$BINARY" "${BINARY}.old" 2>/dev/null || true
 fi
-cp "$BUILT" "$BINARY"
+cp "$binary_path" "$BINARY"
 chmod +x "$BINARY"
 rm -f "${BINARY}.old"
 

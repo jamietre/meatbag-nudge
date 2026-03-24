@@ -4,20 +4,20 @@ Desktop notifications for Claude Code. Plays a sound when Claude needs attention
 
 ## Quick install
 
-One-liner (requires Rust toolchain and `jq`):
+One-liner — downloads the latest release binary from GitHub (no Rust required):
 
 ```bash
-git clone ssh://git@bitbucket.build.dkinternal.com/~j.treworgy/dk-docs.git && bash dk-docs/helpers/claude-meatbag-nudge/install.sh
+curl -fsSL https://raw.githubusercontent.com/jamietre/meatbag-nudge/master/install.sh | bash
 ```
 
-Or from an existing checkout:
+Or, if you have the repo checked out:
 
 ```bash
 bash install.sh
 ```
 
-This will:
-1. Build the binary with `cargo build --release`
+The script will:
+1. Download the latest release binary for your platform from GitHub
 2. Copy the binary to `~/.local/bin/`
 3. Add hooks to `~/.claude/settings.json` (requires `jq`)
 
@@ -30,9 +30,11 @@ The installer uses bare command names in hooks (`claude-notify stop` etc.) so a 
 
 ### Prerequisites
 
-- **Rust** toolchain (install via [mise](https://mise.jdx.dev/) or [rustup](https://rustup.rs/))
+- **curl** or **wget** — for downloading the release binary (pre-installed on most systems)
 - **jq** — for auto-configuring hooks in settings.json
 - **Linux/WSL**: `paplay` (PulseAudio) for sound — typically pre-installed with WSLg
+
+To build from source instead of downloading, pass `--build` (requires the **Rust** toolchain via [mise](https://mise.jdx.dev/) or [rustup](https://rustup.rs/)).
 
 ## How it works
 
