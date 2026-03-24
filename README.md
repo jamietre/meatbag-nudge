@@ -18,7 +18,7 @@ bash install.sh
 
 This will:
 1. Build the binary with `cargo build --release`
-2. Copy binary + sounds to `~/.local/bin/`
+2. Copy the binary to `~/.local/bin/`
 3. Add hooks to `~/.claude/settings.json` (requires `jq`)
 
 Options:
@@ -87,6 +87,19 @@ All settings can also be set via environment variables (e.g. in your shell profi
 
 ### Sound paths
 
+By default, system sounds are used:
+
+| Platform | Notification | Escalation |
+|---|---|---|
+| Windows | `C:\Windows\Media\Speech Misrecognition.wav` (fallback: `Windows Notify System Generic.wav`) | `C:\Windows\Media\Windows Message Nudge.wav` (fallback: `Windows Exclamation.wav`) |
+| Linux/WSL | `/usr/share/sounds/freedesktop/stereo/message.oga` | `/usr/share/sounds/freedesktop/stereo/bell.oga` |
+
+To use custom sounds, either:
+- Place `notification.wav` / `escalation.wav` in a `sounds/` subdirectory next to the binary (e.g. `~/.local/bin/sounds/`), or
+- Set `--sound` / `--escalation-sound` flags, or `MEATBAG_NOTIFICATION_SOUND` / `MEATBAG_ESCALATION_SOUND` env vars.
+
+Custom sound files in `sounds/` are checked before system sounds and may be `.wav`, `.oga`, or `.ogg`.
+
 Sound paths accept both POSIX and Windows formats. When running in WSL, Windows paths (e.g. `C:\Windows\Media\sound.wav`) are automatically converted to WSL paths (`/mnt/c/Windows/Media/sound.wav`).
 
 ### Terminal context variables
@@ -149,7 +162,6 @@ bash install.sh --uninstall
 | File | Purpose |
 |---|---|
 | `src/main.rs` | Rust source — cross-platform notification handler |
-| `sounds/` | Bundled default notification and escalation WAV files |
 | `Cargo.toml` | Rust project config |
 | `.mise.toml` | Mise tooling config with build tasks |
 | `.cargo/config.toml` | Cross-compilation linker settings |

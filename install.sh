@@ -133,7 +133,6 @@ while [[ $# -gt 0 ]]; do
 done
 
 BINARY="${INSTALL_DIR}/${BINARY_NAME}${EXE_EXT}"
-SOUNDS_DIR="${INSTALL_DIR}/sounds"
 
 cat <<'BANNER'
 
@@ -151,9 +150,15 @@ cat <<'BANNER'
   e.g. claude's response ends with a "." instead of a "?". In that case,
   you'll get the usual notification, but it won't escalate.
 
+  By default, system sounds are used (Windows Media sounds on Windows,
+  freedesktop/ALSA sounds on Linux). You can override sounds via
+  --sound / --escalation-sound flags or environment variables.
+  Place custom sounds in ~/.local/bin/sounds/ as notification.wav
+  and escalation.wav to use them automatically.
+
   This installer will:
     1. Build the claude-notify binary from source (requires Rust)
-    2. Copy the binary + sound files to ~/.local/bin/
+    2. Copy the binary to ~/.local/bin/
     3. Add notification hooks to ~/.claude/settings.json (requires jq)
 
 BANNER
@@ -161,7 +166,6 @@ BANNER
 if $UNINSTALL; then
     echo "Uninstalling claude-meatbag-nudge..."
     rm -f "$BINARY"
-    rm -rf "$SOUNDS_DIR"
     remove_hooks
     echo "Done."
     exit 0
@@ -227,19 +231,7 @@ cp "$BUILT" "$BINARY"
 chmod +x "$BINARY"
 rm -f "${BINARY}.old"
 
-# Install sounds
-mkdir -p "$SOUNDS_DIR"
-for wav in "$SCRIPT_DIR/sounds/"*.wav; do
-    dest="$SOUNDS_DIR/$(basename "$wav")"
-    if [ -f "$dest" ]; then
-        mv "$dest" "${dest}.old" 2>/dev/null || true
-    fi
-    cp "$wav" "$dest"
-    rm -f "${dest}.old"
-done
-
 echo "Installed: $BINARY"
-echo "Sounds:   $SOUNDS_DIR/"
 
 # Verify on PATH
 if ! command -v "$BINARY_NAME" &>/dev/null; then

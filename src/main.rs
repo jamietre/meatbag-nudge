@@ -305,21 +305,77 @@ fn normalize_path(path: &str) -> String {
     trimmed.to_string()
 }
 
-fn default_sound(name: &str) -> String {
-    // Check next to the binary first (direct install)
-    if let Ok(exe) = env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let path = exe_dir.join("sounds").join(name);
+/// Look up a sound by kind ("notification" or "escalation").
+/// Checks for a user-installed custom sound next to the binary first,
+/// then falls back to platform system sounds.
+fn default_sound(kind: &str) -> String {
+    // Check next to the binary first (direct install or user-placed custom sounds)
+    for ext in &["wav", "oga", "ogg"] {
+        let name = format!("{}.{}", kind, ext);
+        if let Ok(exe) = env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                let path = exe_dir.join("sounds").join(&name);
+                if path.exists() {
+                    return path.to_string_lossy().into_owned();
+                }
+            }
+        }
+        // Then check the resolved install dir (symlink install)
+        if let Some(dir) = install_dir() {
+            let path = dir.join("sounds").join(&name);
             if path.exists() {
                 return path.to_string_lossy().into_owned();
             }
         }
     }
-    // Then check the resolved install dir (symlink install)
-    if let Some(dir) = install_dir() {
-        let path = dir.join("sounds").join(name);
-        if path.exists() {
-            return path.to_string_lossy().into_owned();
+    // Fall back to platform system sounds
+    system_sound(kind)
+}
+
+/// Return a path to a suitable system sound for the given kind, or empty string if none found.
+fn system_sound(kind: &str) -> String {
+    #[cfg(windows)]
+    {
+        let candidates: &[&str] = if kind == "escalation" {
+            &[
+                r"C:\Windows\Media\Windows Message Nudge.wav",
+                r"C:\Windows\Media\Windows Exclamation.wav",
+                r"C:\Windows\Media\Windows Critical Stop.wav",
+                r"C:\Windows\Media\tada.wav",
+            ]
+        } else {
+            &[
+                r"C:\Windows\Media\Speech Misrecognition.wav",
+                r"C:\Windows\Media\Windows Notify System Generic.wav",
+                r"C:\Windows\Media\chimes.wav",
+                r"C:\Windows\Media\Windows Notify.wav",
+            ]
+        };
+        for path in candidates {
+            if std::path::Path::new(path).exists() {
+                return path.to_string();
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        let candidates: &[&str] = if kind == "escalation" {
+            &[
+                "/usr/share/sounds/freedesktop/stereo/bell.oga",
+                "/usr/share/sounds/freedesktop/stereo/complete.oga",
+                "/usr/share/sounds/alsa/Rear_Center.wav",
+            ]
+        } else {
+            &[
+                "/usr/share/sounds/freedesktop/stereo/message.oga",
+                "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga",
+                "/usr/share/sounds/alsa/Front_Center.wav",
+            ]
+        };
+        for path in candidates {
+            if std::path::Path::new(path).exists() {
+                return path.to_string();
+            }
         }
     }
     String::new()
@@ -537,7 +593,7 @@ fn play_sound(dir: &str, cooldown: u64) {
 
     let sound = env::var("MEATBAG_NOTIFICATION_SOUND")
         .map(|s| normalize_path(&s))
-        .unwrap_or_else(|_| default_sound("notification.wav"));
+        .unwrap_or_else(|_| default_sound("notification"));
     play_wav(&sound);
 }
 
@@ -606,7 +662,7 @@ fn run_escalation(delay_secs: u64) {
 
     let sound = env::var("MEATBAG_ESCALATION_SOUND")
         .map(|s| normalize_path(&s))
-        .unwrap_or_else(|_| default_sound("escalation.wav"));
+        .unwrap_or_else(|_| default_sound("escalation"));
     if !sound.is_empty() {
         for i in 0..sound_repeat {
             if i > 0 {
