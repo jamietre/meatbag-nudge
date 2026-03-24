@@ -1,0 +1,21 @@
+[tools]
+rust = "latest"
+
+[tasks.build]
+description = "Build for current platform (release)"
+run = "cargo build --release"
+
+[tasks.cross-windows]
+description = "Cross-compile for Windows x86_64 from Linux (requires mingw-w64)"
+run = "cargo build --release --target x86_64-pc-windows-gnu"
+
+[tasks.cross-linux]
+description = "Cross-compile for Linux x86_64 from Windows (requires WSL or cross)"
+run = "cargo build --release --target x86_64-unknown-linux-gnu"
+
+[tasks.setup-cross]
+description = "Install cross-compilation targets"
+run = """
+rustup target add x86_64-unknown-linux-gnu
+rustup target add x86_64-pc-windows-gnu
+"""
