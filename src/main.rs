@@ -907,14 +907,14 @@ fn run_escalation(delay_secs: u64) {
         let flash_count: u32 = env::var("MEATBAG_FLASH_COUNT")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(2);
+            .unwrap_or(1);
         win32::flash_screen(flash_count);
     }
 
     let sound_repeat: u32 = env::var("MEATBAG_ESCALATION_REPEAT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
+        .unwrap_or(1);
 
     let sound = env::var("MEATBAG_ESCALATION_SOUND")
         .map(|s| normalize_path(&s))
@@ -973,7 +973,7 @@ fn main() {
         }
         #[cfg(windows)]
         "_flash" => {
-            let count: u32 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(2);
+            let count: u32 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(1);
             win32::flash_screen(count);
             return;
         }
@@ -1110,8 +1110,8 @@ fn main() {
             eprintln!();
             eprintln!("Options (override env vars):");
             eprintln!("  --delay N     Seconds before escalation fires (default: 300 stop, 30 permission)");
-            eprintln!("  --flash N     Number of screen flashes on escalation (default: 2)");
-            eprintln!("  --repeat N    Number of times to play escalation sound (default: 2)");
+            eprintln!("  --flash N     Number of screen flashes on escalation (default: 1)");
+            eprintln!("  --repeat N    Number of times to play escalation sound (default: 1)");
             eprintln!("  --cooldown N  Suppress notification sound for N seconds after interaction (default: 30)");
             eprintln!("  --sound PATH  WAV file for notification sound");
             eprintln!("  --escalation-sound PATH  WAV file for escalation sound");
@@ -1121,7 +1121,7 @@ fn main() {
             eprintln!();
             eprintln!("Test commands:");
             eprintln!("  _play <path>  Play a WAV file synchronously");
-            eprintln!("  _flash [N]    Flash screen N times (default: 2)");
+            eprintln!("  _flash [N]    Flash screen N times (default: 1)");
             eprintln!("  _escalate <delay> [flash] [repeat]  Run escalation after delay");
             process::exit(1);
         }
