@@ -468,17 +468,18 @@ fn system_sound(kind: &str) -> String {
     }
     #[cfg(unix)]
     {
+        // WAV first (works with aplay, paplay, pw-play), then OGG (paplay/pw-play only)
         let candidates: &[&str] = if kind == "escalation" {
             &[
+                "/usr/share/sounds/alsa/Rear_Center.wav",
                 "/usr/share/sounds/freedesktop/stereo/bell.oga",
                 "/usr/share/sounds/freedesktop/stereo/complete.oga",
-                "/usr/share/sounds/alsa/Rear_Center.wav",
             ]
         } else {
             &[
+                "/usr/share/sounds/alsa/Front_Center.wav",
                 "/usr/share/sounds/freedesktop/stereo/message.oga",
                 "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga",
-                "/usr/share/sounds/alsa/Front_Center.wav",
             ]
         };
         for path in candidates {
@@ -588,14 +589,38 @@ fn kill_process(pid: u32) {
 // Sound playback
 // ---------------------------------------------------------------------------
 
-/// Play a WAV file in a detached child process.
+/// Detect the best available audio player on this system (cached).
+#[cfg(unix)]
+fn detect_audio_player() -> &'static str {
+    static PLAYER: OnceLock<&'static str> = OnceLock::new();
+    PLAYER.get_or_init(|| {
+        for player in &["paplay", "aplay", "pw-play"] {
+            if Command::new("which")
+                .arg(player)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
+                return player;
+            }
+        }
+        "paplay" // last-resort default
+    })
+}
+
+/// Play a sound file in a detached child process.
 fn play_wav(path: &str) {
     if path.is_empty() {
         return;
     }
     #[cfg(unix)]
     {
-        spawn_detached("paplay", &[path]);
+        let player = env::var("MEATBAG_PLAYER")
+            .unwrap_or_else(|_| detect_audio_player().to_string());
+        spawn_detached(&player, &[path]);
     }
     #[cfg(windows)]
     {
@@ -986,6 +1011,9 @@ fn main() {
     if let Some(v) = parse_flag(&args, "--escalation-sound") {
         env::set_var("MEATBAG_ESCALATION_SOUND", &v);
     }
+    if let Some(v) = parse_flag(&args, "--player") {
+        env::set_var("MEATBAG_PLAYER", &v);
+    }
     if let Some(v) = parse_flag_opt_val(&args, "--focus", "escalation") {
         env::set_var("MEATBAG_FOCUS", &v);
     }
@@ -1087,6 +1115,7 @@ fn main() {
             eprintln!("  --cooldown N  Suppress notification sound for N seconds after interaction (default: 30)");
             eprintln!("  --sound PATH  WAV file for notification sound");
             eprintln!("  --escalation-sound PATH  WAV file for escalation sound");
+            eprintln!("  --player CMD  Audio player command (default: paplay, aplay, or pw-play — whichever is found first)");
             eprintln!("  --focus [EVENTS]  Focus terminal on nudge; EVENTS is comma-separated list of notification,escalation (default when flag present: escalation)");
             eprintln!("  --focus-cmd CMD   Shell command to focus terminal, overrides built-in focus");
             eprintln!();
