@@ -112,9 +112,10 @@ configure_hooks() {
     fi
 
     # Prompt for settings
-    local cooldown stop_delay perm_delay flash_count repeat_count
+    local cooldown stop_delay perm_delay flash_count repeat_count focus_choice
     if $USE_DEFAULTS; then
         cooldown=30 stop_delay=300 perm_delay=30 flash_count=1 repeat_count=1
+        focus_choice="notification"
     else
         echo ""
         echo "Configure notification settings (press Enter for defaults):"
@@ -133,7 +134,21 @@ configure_hooks() {
         echo "  How many times the screen flashes and escalation sound plays."
         prompt_value "Screen flash count" "1" flash_count
         prompt_value "Escalation sound repeat" "1" repeat_count
+        echo ""
+        echo "  Focus the terminal window when a nudge fires?"
+        echo "  Options: none, notification, escalation, both"
+        prompt_value "Focus on" "notification" focus_choice
     fi
+
+    # Normalise focus_choice -> --focus flag
+    local focus_flag=""
+    case "$focus_choice" in
+        notification) focus_flag=" --focus notification" ;;
+        escalation)   focus_flag=" --focus escalation" ;;
+        both)         focus_flag=" --focus notification,escalation" ;;
+        none|"")      focus_flag="" ;;
+        *)            focus_flag=" --focus $focus_choice" ;;
+    esac
 
     # Detect audio player (native Linux only — Windows binary handles audio internally)
     local player_flag=""
@@ -152,8 +167,8 @@ configure_hooks() {
     fi
 
     # Build hook commands with CLI flags
-    local stop_cmd="\"$binary\" stop --delay $stop_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}"
-    local perm_cmd="\"$binary\" permission --delay $perm_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}"
+    local stop_cmd="\"$binary\" stop --delay $stop_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}"
+    local perm_cmd="\"$binary\" permission --delay $perm_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}"
     local cancel_cmd="\"$binary\" cancel"
     local dismiss_cmd="\"$binary\" dismiss"
     local prompt_cmd="\"$binary\" prompt"
