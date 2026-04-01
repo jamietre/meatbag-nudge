@@ -3,7 +3,7 @@ set -euo pipefail
 
 INSTALL_DIR="${HOME}/.local/bin"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
-BINARY_NAME="claude-notify"
+BINARY_NAME="meatbag-nudge"
 REPO="jamietre/meatbag-nudge"
 
 # Detect platform
@@ -17,25 +17,25 @@ is_wsl() {
     [ -n "${WSL_DISTRO_NAME:-}" ]
 }
 
-# Find the Windows claude-notify.exe binary from WSL.
-# Returns "claude-notify.exe" if on PATH via interop, or the full WSL path if found
+# Find the Windows meatbag-nudge.exe binary from WSL.
+# Returns "meatbag-nudge.exe" if on PATH via interop, or the full WSL path if found
 # in the standard Windows install location. Prints nothing if not found.
 find_windows_binary() {
-    if command -v claude-notify.exe &>/dev/null 2>&1; then
-        echo "claude-notify.exe"
+    if command -v meatbag-nudge.exe &>/dev/null 2>&1; then
+        echo "meatbag-nudge.exe"
         return
     fi
     local win_home
     win_home=$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r\n')" 2>/dev/null) || true
-    if [ -n "$win_home" ] && [ -f "$win_home/.local/bin/claude-notify.exe" ]; then
-        echo "$win_home/.local/bin/claude-notify.exe"
+    if [ -n "$win_home" ] && [ -f "$win_home/.local/bin/meatbag-nudge.exe" ]; then
+        echo "$win_home/.local/bin/meatbag-nudge.exe"
         return
     fi
     echo ""
 }
 
 handle_wsl_install() {
-    echo "  WSL detected — claude-notify uses the Windows binary for native audio and screen flash."
+    echo "  WSL detected — meatbag-nudge uses the Windows binary for native audio and screen flash."
     echo ""
 
     local win_binary
@@ -46,7 +46,7 @@ handle_wsl_install() {
 
   ERROR: Windows binary not found.
 
-  In WSL, claude-notify delegates to the native Windows binary for audio
+  In WSL, meatbag-nudge delegates to the native Windows binary for audio
   and screen flash. Please install it on Windows first:
 
     1. Open a Windows terminal (PowerShell, cmd, or Git Bash — not WSL)
@@ -54,7 +54,7 @@ handle_wsl_install() {
     3. Re-run this installer in WSL
 
   Ensure %USERPROFILE%\.local\bin is on your Windows PATH so that
-  claude-notify.exe is accessible from WSL.
+  meatbag-nudge.exe is accessible from WSL.
 
 EOF
         exit 1
@@ -74,7 +74,7 @@ EOF
     fi
 
     echo ""
-    echo "Done! Test with: claude-notify.exe stop --delay 3"
+    echo "Done! Test with: meatbag-nudge.exe stop --delay 3"
     exit 0
 }
 
@@ -173,8 +173,8 @@ configure_hooks() {
     local dismiss_cmd="\"$binary\" dismiss"
     local prompt_cmd="\"$binary\" prompt"
 
-    # Check if hooks already reference claude-notify
-    if grep -q "claude-notify" "$SETTINGS_FILE" 2>/dev/null; then
+    # Check if hooks already reference meatbag-nudge
+    if grep -q "meatbag-nudge" "$SETTINGS_FILE" 2>/dev/null; then
         echo ""
         read -rp "Hooks already exist. Overwrite? [y/N]: " overwrite </dev/tty
         if [[ ! "$overwrite" =~ ^[Yy] ]]; then
@@ -287,7 +287,7 @@ report_default_sounds() {
 
 remove_hooks() {
     if ! command -v jq &>/dev/null; then
-        echo "WARNING: jq not found — remove claude-notify hooks manually from $SETTINGS_FILE"
+        echo "WARNING: jq not found — remove meatbag-nudge hooks manually from $SETTINGS_FILE"
         return
     fi
     if [ ! -f "$SETTINGS_FILE" ]; then
@@ -298,7 +298,7 @@ remove_hooks() {
     tmp=$(mktemp)
     jq '
       .hooks |= with_entries(
-        select(.value | tostring | test("claude-notify") | not)
+        select(.value | tostring | test("meatbag-nudge") | not)
       )
     ' "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
     echo "Hooks removed from $SETTINGS_FILE"
@@ -359,9 +359,9 @@ download_release() {
     # Pick the right asset
     local asset_name
     if [ "$PLATFORM" = "windows" ]; then
-        asset_name="claude-notify-windows-x86_64.zip"
+        asset_name="meatbag-nudge-windows-x86_64.zip"
     else
-        asset_name="claude-notify-linux-x86_64.tar.gz"
+        asset_name="meatbag-nudge-linux-x86_64.tar.gz"
     fi
 
     local download_url="https://github.com/${REPO}/releases/download/${tag}/${asset_name}"
@@ -485,4 +485,4 @@ if ! $NO_HOOKS; then
 fi
 
 echo ""
-echo "Done! Test with: claude-notify stop --delay 3"
+echo "Done! Test with: meatbag-nudge stop --delay 3"

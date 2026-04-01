@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-const BIN: &str = env!("CARGO_BIN_EXE_claude-notify");
+const BIN: &str = env!("CARGO_BIN_EXE_meatbag-nudge");
 /// Each tick unit = 100ms wall-clock time in tests.
 const TICK_MS: &str = "100";
 

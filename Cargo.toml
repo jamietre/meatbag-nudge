@@ -1,5 +1,5 @@
 [package]
-name = "claude-notify"
+name = "meatbag-nudge"
 version = "0.1.0"
 edition = "2021"
 

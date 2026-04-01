@@ -538,11 +538,11 @@ fn tick_sleep(secs: u64) {
 fn state_dir() -> String {
     env::var("MEATBAG_STATE_DIR").unwrap_or_else(|_| {
         #[cfg(unix)]
-        { "/tmp/claude-notify".into() }
+        { "/tmp/meatbag-nudge".into() }
         #[cfg(windows)]
         {
             let tmp = env::var("TEMP").unwrap_or_else(|_| r"C:\Temp".into());
-            format!(r"{}\claude-notify", tmp)
+            format!(r"{}\meatbag-nudge", tmp)
         }
     })
 }
@@ -1136,7 +1136,7 @@ fn main() {
             eprintln!("Logged to {}", log.display());
         }
         _ => {
-            eprintln!("Usage: claude-notify <action> [options]");
+            eprintln!("Usage: meatbag-nudge <action> [options]");
             eprintln!();
             eprintln!("Actions:");
             eprintln!("  stop          Play notification sound, schedule escalation");
