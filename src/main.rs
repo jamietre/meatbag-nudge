@@ -868,6 +868,9 @@ fn run_escalation(delay_secs: u64) {
                 .stderr(Stdio::null())
                 .status();
             let _ = shell_result;
+            if focus_at("escalation") {
+                focus_window();
+            }
             let _ = fs::remove_file(pid_path(&dir));
             return;
         }
@@ -898,6 +901,10 @@ fn run_escalation(delay_secs: u64) {
             }
             play_wav(&sound);
         }
+    }
+
+    if focus_at("escalation") {
+        focus_window();
     }
 
     let _ = fs::remove_file(pid_path(&dir));
