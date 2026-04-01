@@ -12,6 +12,72 @@ case "$(uname -s)" in
     *)                     EXE_EXT="";     PLATFORM="linux"   ;;
 esac
 
+is_wsl() {
+    # WSL_DISTRO_NAME is set by WSL itself and works even with custom kernels
+    [ -n "${WSL_DISTRO_NAME:-}" ]
+}
+
+# Find the Windows claude-notify.exe binary from WSL.
+# Returns "claude-notify.exe" if on PATH via interop, or the full WSL path if found
+# in the standard Windows install location. Prints nothing if not found.
+find_windows_binary() {
+    if command -v claude-notify.exe &>/dev/null 2>&1; then
+        echo "claude-notify.exe"
+        return
+    fi
+    local win_home
+    win_home=$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r\n')" 2>/dev/null) || true
+    if [ -n "$win_home" ] && [ -f "$win_home/.local/bin/claude-notify.exe" ]; then
+        echo "$win_home/.local/bin/claude-notify.exe"
+        return
+    fi
+    echo ""
+}
+
+handle_wsl_install() {
+    echo "  WSL detected — claude-notify uses the Windows binary for native audio and screen flash."
+    echo ""
+
+    local win_binary
+    win_binary=$(find_windows_binary)
+
+    if [ -z "$win_binary" ]; then
+        cat <<'EOF'
+
+  ERROR: Windows binary not found.
+
+  In WSL, claude-notify delegates to the native Windows binary for audio
+  and screen flash. Please install it on Windows first:
+
+    1. Open a Windows terminal (PowerShell, cmd, or Git Bash — not WSL)
+    2. Run: bash install.sh
+    3. Re-run this installer in WSL
+
+  Ensure %USERPROFILE%\.local\bin is on your Windows PATH so that
+  claude-notify.exe is accessible from WSL.
+
+EOF
+        exit 1
+    fi
+
+    echo "  Using Windows binary: $win_binary"
+
+    if $UNINSTALL; then
+        echo "Removing hooks..."
+        remove_hooks
+        echo "Done."
+        exit 0
+    fi
+
+    if ! $NO_HOOKS; then
+        configure_hooks "$win_binary"
+    fi
+
+    echo ""
+    echo "Done! Test with: claude-notify.exe stop --delay 3"
+    exit 0
+}
+
 usage() {
     echo "Usage: bash install.sh [OPTIONS]"
     echo ""
@@ -33,6 +99,7 @@ prompt_value() {
 }
 
 configure_hooks() {
+    local binary="${1:-$BINARY_NAME}"
     if ! command -v jq &>/dev/null; then
         echo "WARNING: jq not found — cannot auto-configure."
         echo "Add hooks manually to $SETTINGS_FILE (see README)."
@@ -45,9 +112,10 @@ configure_hooks() {
     fi
 
     # Prompt for settings
-    local cooldown stop_delay perm_delay flash_count repeat_count
+    local cooldown stop_delay perm_delay flash_count repeat_count focus_choice
     if $USE_DEFAULTS; then
         cooldown=30 stop_delay=300 perm_delay=30 flash_count=1 repeat_count=1
+        focus_choice="notification"
     else
         echo ""
         echo "Configure notification settings (press Enter for defaults):"
@@ -66,14 +134,44 @@ configure_hooks() {
         echo "  How many times the screen flashes and escalation sound plays."
         prompt_value "Screen flash count" "1" flash_count
         prompt_value "Escalation sound repeat" "1" repeat_count
+        echo ""
+        echo "  Focus the terminal window when a nudge fires?"
+        echo "  Options: none, notification, escalation, both"
+        prompt_value "Focus on" "notification" focus_choice
+    fi
+
+    # Normalise focus_choice -> --focus flag
+    local focus_flag=""
+    case "$focus_choice" in
+        notification) focus_flag=" --focus notification" ;;
+        escalation)   focus_flag=" --focus escalation" ;;
+        both)         focus_flag=" --focus notification,escalation" ;;
+        none|"")      focus_flag="" ;;
+        *)            focus_flag=" --focus $focus_choice" ;;
+    esac
+
+    # Detect audio player (native Linux only — Windows binary handles audio internally)
+    local player_flag=""
+    local uname_s; uname_s="$(uname -s)"
+    if [[ "$uname_s" != MSYS* && "$uname_s" != MINGW* && "$uname_s" != CYGWIN* ]] && \
+       [[ "$binary" != *.exe ]]; then
+        local detected_player
+        detected_player=$(detect_audio_player)
+        if [ -n "$detected_player" ]; then
+            echo "  Audio player: $detected_player"
+            player_flag=" --player $detected_player"
+        else
+            echo "  WARNING: No audio player found (paplay, aplay, pw-play). Sound will not play."
+            echo "           Install one, then re-run the installer or add --player <cmd> to hooks manually."
+        fi
     fi
 
     # Build hook commands with CLI flags
-    local stop_cmd="claude-notify stop --delay $stop_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count"
-    local perm_cmd="claude-notify permission --delay $perm_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count"
-    local cancel_cmd="claude-notify cancel"
-    local dismiss_cmd="claude-notify dismiss"
-    local prompt_cmd="claude-notify prompt"
+    local stop_cmd="\"$binary\" stop --delay $stop_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}"
+    local perm_cmd="\"$binary\" permission --delay $perm_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}"
+    local cancel_cmd="\"$binary\" cancel"
+    local dismiss_cmd="\"$binary\" dismiss"
+    local prompt_cmd="\"$binary\" prompt"
 
     # Check if hooks already reference claude-notify
     if grep -q "claude-notify" "$SETTINGS_FILE" 2>/dev/null; then
@@ -97,6 +195,94 @@ configure_hooks() {
       .hooks.UserPromptSubmit = [{"hooks": [{"type": "command", "command": $prompt}]}]
     ' "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
     echo "Hooks configured in $SETTINGS_FILE"
+
+    report_default_sounds "$INSTALL_DIR"
+}
+
+detect_default_sound() {
+    local kind="$1"   # "notification" or "escalation"
+    local install_dir="$2"
+    local is_wsl=false
+    grep -qi microsoft /proc/version 2>/dev/null && is_wsl=true
+
+    # Custom sounds next to binary take priority
+    for ext in wav oga ogg; do
+        local f="$install_dir/sounds/${kind}.${ext}"
+        [ -f "$f" ] && echo "$f" && return
+    done
+
+    # WSL: Windows Media sounds
+    if $is_wsl; then
+        local wsl_candidates=()
+        if [ "$kind" = "escalation" ]; then
+            wsl_candidates=(
+                "/mnt/c/Windows/Media/Windows Message Nudge.wav"
+                "/mnt/c/Windows/Media/Windows Exclamation.wav"
+                "/mnt/c/Windows/Media/Windows Critical Stop.wav"
+                "/mnt/c/Windows/Media/tada.wav"
+            )
+        else
+            wsl_candidates=(
+                "/mnt/c/Windows/Media/Speech Misrecognition.wav"
+                "/mnt/c/Windows/Media/Windows Notify System Generic.wav"
+                "/mnt/c/Windows/Media/chimes.wav"
+                "/mnt/c/Windows/Media/Windows Notify.wav"
+            )
+        fi
+        for f in "${wsl_candidates[@]}"; do
+            [ -f "$f" ] && echo "$f" && return
+        done
+    fi
+
+    # Linux system sounds
+    local linux_candidates=()
+    if [ "$kind" = "escalation" ]; then
+        linux_candidates=(
+            "/usr/share/sounds/alsa/Rear_Center.wav"
+            "/usr/share/sounds/freedesktop/stereo/bell.oga"
+            "/usr/share/sounds/freedesktop/stereo/complete.oga"
+        )
+    else
+        linux_candidates=(
+            "/usr/share/sounds/alsa/Front_Center.wav"
+            "/usr/share/sounds/freedesktop/stereo/message.oga"
+            "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga"
+        )
+    fi
+    for f in "${linux_candidates[@]}"; do
+        [ -f "$f" ] && echo "$f" && return
+    done
+
+    echo ""
+}
+
+report_default_sounds() {
+    local install_dir="$1"
+    echo ""
+    echo "Sound configuration:"
+
+    local notif_sound esc_sound
+    notif_sound=$(detect_default_sound "notification" "$install_dir")
+    esc_sound=$(detect_default_sound "escalation" "$install_dir")
+
+    if [ -n "$notif_sound" ]; then
+        echo "  Notification sound : $notif_sound"
+    else
+        echo "  Notification sound : NOT FOUND"
+    fi
+    if [ -n "$esc_sound" ]; then
+        echo "  Escalation sound   : $esc_sound"
+    else
+        echo "  Escalation sound   : NOT FOUND"
+    fi
+
+    if [ -z "$notif_sound" ] || [ -z "$esc_sound" ]; then
+        echo ""
+        echo "  To use custom sounds, either:"
+        echo "    Place notification.wav / escalation.wav in $install_dir/sounds/"
+        echo "    or add --sound / --escalation-sound flags to the hook commands in:"
+        echo "    $SETTINGS_FILE"
+    fi
 }
 
 remove_hooks() {
@@ -123,18 +309,18 @@ build_from_source() {
     script_dir="$(cd "$(dirname "$0")" && pwd)"
 
     if ! command -v cargo &>/dev/null; then
-        echo "ERROR: cargo not found. Install the Rust toolchain:"
-        echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-        echo "  or: mise use -g rust@latest"
+        echo "ERROR: cargo not found. Install the Rust toolchain:" >&2
+        echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
+        echo "  or: mise use -g rust@latest" >&2
         exit 1
     fi
 
-    echo "Building from source..."
+    echo "Building from source..." >&2
     cd "$script_dir"
-    cargo build --release
+    cargo build --release >&2
     local built="target/release/${BINARY_NAME}${EXE_EXT}"
     if [ ! -f "$built" ]; then
-        echo "ERROR: Build succeeded but binary not found at $built"
+        echo "ERROR: Build succeeded but binary not found at $built" >&2
         exit 1
     fi
     echo "$script_dir/$built"
@@ -147,7 +333,7 @@ download_release() {
     elif command -v wget &>/dev/null; then
         downloader="wget"
     else
-        echo "ERROR: curl or wget is required to download releases."
+        echo "ERROR: curl or wget is required to download releases." >&2
         exit 1
     fi
 
@@ -163,12 +349,12 @@ download_release() {
     local tag
     tag=$(echo "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
     if [ -z "$tag" ]; then
-        echo "ERROR: Could not determine latest release tag. Check your internet connection"
-        echo "or visit https://github.com/${REPO}/releases to download manually."
+        echo "ERROR: Could not determine latest release tag. Check your internet connection" >&2
+        echo "or visit https://github.com/${REPO}/releases to download manually." >&2
         exit 1
     fi
 
-    echo "Latest release: $tag"
+    echo "Latest release: $tag" >&2
 
     # Pick the right asset
     local asset_name
@@ -183,7 +369,7 @@ download_release() {
     tmp_dir=$(mktemp -d)
     local archive="${tmp_dir}/${asset_name}"
 
-    echo "Downloading $asset_name..."
+    echo "Downloading $asset_name..." >&2
     if [ "$downloader" = "curl" ]; then
         curl -fsSL -o "$archive" "$download_url"
     else
@@ -192,15 +378,15 @@ download_release() {
 
     # Extract
     if [[ "$asset_name" == *.tar.gz ]]; then
-        tar -xzf "$archive" -C "$tmp_dir"
+        tar -xzf "$archive" -C "$tmp_dir" >&2
     else
-        unzip -q "$archive" -d "$tmp_dir"
+        unzip -q "$archive" -d "$tmp_dir" >&2
     fi
 
     local binary="${tmp_dir}/${BINARY_NAME}${EXE_EXT}"
     if [ ! -f "$binary" ]; then
-        echo "ERROR: Binary not found in archive. Contents:"
-        ls "$tmp_dir"
+        echo "ERROR: Binary not found in archive. Contents:" >&2
+        ls "$tmp_dir" >&2
         exit 1
     fi
 
@@ -253,6 +439,10 @@ cat <<'BANNER'
     3. Add notification hooks to ~/.claude/settings.json (requires jq)
 
 BANNER
+
+if is_wsl; then
+    handle_wsl_install
+fi
 
 if $UNINSTALL; then
     echo "Uninstalling claude-meatbag-nudge..."

@@ -144,6 +144,20 @@ mod win32 {
         pt_y: i32,
     }
 
+    #[repr(C)]
+    struct ProcessEntry32W {
+        dw_size: u32,
+        cnt_usage: u32,
+        th32_process_id: u32,
+        th32_default_heap_id: usize,
+        th32_module_id: u32,
+        cnt_threads: u32,
+        th32_parent_process_id: u32,
+        pc_pri_class_base: i32,
+        dw_flags: u32,
+        sz_exe_file: [u16; 260],
+    }
+
     #[link(name = "user32")]
     extern "system" {
         fn RegisterClassExW(wc: *const WndClassExW) -> u16;
@@ -165,6 +179,33 @@ mod win32 {
     #[link(name = "gdi32")]
     extern "system" {
         fn GetStockObject(index: i32) -> usize;
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> usize;
+        fn Process32FirstW(snapshot: usize, entry: *mut ProcessEntry32W) -> i32;
+        fn Process32NextW(snapshot: usize, entry: *mut ProcessEntry32W) -> i32;
+        fn GetCurrentThreadId() -> u32;
+    }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetConsoleWindow() -> usize;
+        fn SetForegroundWindow(hwnd: usize) -> i32;
+        fn BringWindowToTop(hwnd: usize) -> i32;
+        fn ShowWindow(hwnd: usize, cmd: i32) -> i32;
+        fn GetForegroundWindow() -> usize;
+        fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
+        fn EnumWindows(callback: extern "system" fn(usize, isize) -> i32, lparam: isize) -> i32;
+        fn GetWindowThreadProcessId(hwnd: usize, pid: *mut u32) -> u32;
+        fn GetWindowLongPtrW(hwnd: usize, index: i32) -> isize;
+        fn IsWindowVisible(hwnd: usize) -> i32;
+    }
+
+    struct EnumWindowsParam {
+        target_pid: u32,
+        found_hwnd: usize,
     }
 
     extern "system" fn flash_wnd_proc(hwnd: usize, msg: u32, wp: usize, lp: isize) -> isize {
@@ -260,6 +301,101 @@ mod win32 {
             // Fallback without breakaway
             create_process(cmd_line, DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
         })
+    }
+
+    extern "system" fn enum_window_cb(hwnd: usize, lparam: isize) -> i32 {
+        let param = unsafe { &mut *(lparam as *mut EnumWindowsParam) };
+        unsafe {
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid == param.target_pid && IsWindowVisible(hwnd) != 0 {
+                const GWL_STYLE: i32 = -16;
+                const WS_CHILD: u32 = 0x40000000;
+                let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+                if style & WS_CHILD == 0 {
+                    param.found_hwnd = hwnd;
+                    return 0; // stop enumeration
+                }
+            }
+        }
+        1 // continue
+    }
+
+    fn main_window_for_pid(pid: u32) -> usize {
+        let mut param = EnumWindowsParam { target_pid: pid, found_hwnd: 0 };
+        unsafe { EnumWindows(enum_window_cb, &mut param as *mut EnumWindowsParam as isize); }
+        param.found_hwnd
+    }
+
+    fn parent_pid(pid: u32) -> Option<u32> {
+        const TH32CS_SNAPPROCESS: u32 = 0x00000002;
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap == usize::MAX { return None; }
+            let mut entry = std::mem::zeroed::<ProcessEntry32W>();
+            entry.dw_size = std::mem::size_of::<ProcessEntry32W>() as u32;
+            let mut result = None;
+            if Process32FirstW(snap, &mut entry) != 0 {
+                loop {
+                    if entry.th32_process_id == pid {
+                        let ppid = entry.th32_parent_process_id;
+                        if ppid != 0 { result = Some(ppid); }
+                        break;
+                    }
+                    if Process32NextW(snap, &mut entry) == 0 { break; }
+                }
+            }
+            CloseHandle(snap);
+            result
+        }
+    }
+
+    /// Find the HWND of the terminal hosting this process.
+    /// Tries GetConsoleWindow first; walks the process tree if that returns NULL.
+    pub fn find_terminal_hwnd() -> usize {
+        let hwnd = unsafe { GetConsoleWindow() };
+        if hwnd != 0 { return hwnd; }
+        let mut pid = std::process::id();
+        for _ in 0..10 {
+            match parent_pid(pid) {
+                Some(p) => {
+                    let hwnd = main_window_for_pid(p);
+                    if hwnd != 0 { return hwnd; }
+                    pid = p;
+                }
+                None => break,
+            }
+        }
+        0
+    }
+
+    /// Bring the given window to the foreground. No-ops if hwnd is 0.
+    ///
+    /// Uses the AttachThreadInput trick to bypass Windows' background-process
+    /// restriction on SetForegroundWindow (which otherwise only flashes the
+    /// taskbar instead of actually stealing focus).
+    pub fn focus_hwnd(hwnd: usize) {
+        if hwnd == 0 { return; }
+        const SW_RESTORE: i32 = 9;
+        unsafe {
+            // Restore window if minimized
+            ShowWindow(hwnd, SW_RESTORE);
+
+            // Temporarily attach our input queue to the foreground window's
+            // thread so Windows allows us to steal foreground focus.
+            let fg_hwnd = GetForegroundWindow();
+            let fg_tid = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
+            let my_tid = GetCurrentThreadId();
+            if fg_tid != 0 && fg_tid != my_tid {
+                AttachThreadInput(my_tid, fg_tid, 1);
+                SetForegroundWindow(hwnd);
+                BringWindowToTop(hwnd);
+                AttachThreadInput(my_tid, fg_tid, 0);
+            } else {
+                SetForegroundWindow(hwnd);
+                BringWindowToTop(hwnd);
+            }
+        }
     }
 }
 
@@ -359,17 +495,18 @@ fn system_sound(kind: &str) -> String {
     }
     #[cfg(unix)]
     {
+        // WAV first (works with aplay, paplay, pw-play), then OGG (paplay/pw-play only)
         let candidates: &[&str] = if kind == "escalation" {
             &[
+                "/usr/share/sounds/alsa/Rear_Center.wav",
                 "/usr/share/sounds/freedesktop/stereo/bell.oga",
                 "/usr/share/sounds/freedesktop/stereo/complete.oga",
-                "/usr/share/sounds/alsa/Rear_Center.wav",
             ]
         } else {
             &[
+                "/usr/share/sounds/alsa/Front_Center.wav",
                 "/usr/share/sounds/freedesktop/stereo/message.oga",
                 "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga",
-                "/usr/share/sounds/alsa/Front_Center.wav",
             ]
         };
         for path in candidates {
@@ -479,14 +616,38 @@ fn kill_process(pid: u32) {
 // Sound playback
 // ---------------------------------------------------------------------------
 
-/// Play a WAV file in a detached child process.
+/// Detect the best available audio player on this system (cached).
+#[cfg(unix)]
+fn detect_audio_player() -> &'static str {
+    static PLAYER: OnceLock<&'static str> = OnceLock::new();
+    PLAYER.get_or_init(|| {
+        for player in &["paplay", "aplay", "pw-play"] {
+            if Command::new("which")
+                .arg(player)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
+                return player;
+            }
+        }
+        "paplay" // last-resort default
+    })
+}
+
+/// Play a sound file in a detached child process.
 fn play_wav(path: &str) {
     if path.is_empty() {
         return;
     }
     #[cfg(unix)]
     {
-        spawn_detached("paplay", &[path]);
+        let player = env::var("MEATBAG_PLAYER")
+            .unwrap_or_else(|_| detect_audio_player().to_string());
+        spawn_detached(&player, &[path]);
     }
     #[cfg(windows)]
     {
@@ -494,6 +655,125 @@ fn play_wav(path: &str) {
         let exe = env::current_exe().unwrap_or_default();
         let exe_str = exe.to_string_lossy().to_string();
         spawn_detached(&exe_str, &["_play", path]);
+    }
+}
+
+/// Returns true if focus should fire for the given event.
+/// event is "notification" or "escalation".
+/// MEATBAG_FOCUS is a comma-separated list, e.g. "notification,escalation".
+fn focus_at(event: &str) -> bool {
+    env::var("MEATBAG_FOCUS")
+        .map(|v| v.split(',').any(|e| e.trim() == event))
+        .unwrap_or(false)
+}
+
+/// Capture the terminal window identifier into MEATBAG_FOCUS_HWND so the
+/// detached escalation child inherits it. Call this at the start of
+/// stop/permission handlers, before start_escalation.
+fn capture_focus_target() {
+    if env::var("MEATBAG_FOCUS").map(|v| v.is_empty()).unwrap_or(true) {
+        return;
+    }
+    // Custom cmd needs no HWND — it handles its own window lookup.
+    if env::var("MEATBAG_FOCUS_CMD").map(|v| !v.is_empty()).unwrap_or(false) {
+        return;
+    }
+
+    #[cfg(windows)]
+    {
+        let hwnd = win32::find_terminal_hwnd();
+        if hwnd != 0 {
+            env::set_var("MEATBAG_FOCUS_HWND", hwnd.to_string());
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        if !is_wsl() { return; }
+        if let Some(nt_pid) = wsl_nt_parent_pid() {
+            env::set_var("MEATBAG_FOCUS_HWND", nt_pid.to_string());
+        }
+    }
+}
+
+/// On WSL1, read the Windows NT PID of the parent process from /proc/<ppid>/status
+/// via the NtTgid field. Returns None on WSL2 (field absent) or any read failure.
+#[cfg(unix)]
+fn wsl_nt_parent_pid() -> Option<u32> {
+    let self_status = fs::read_to_string("/proc/self/status").ok()?;
+    let ppid: u32 = self_status
+        .lines()
+        .find(|l| l.starts_with("PPid:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
+    let parent_status = fs::read_to_string(format!("/proc/{}/status", ppid)).ok()?;
+    parent_status
+        .lines()
+        .find(|l| l.starts_with("NtTgid:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse::<u32>()
+        .ok()
+        .filter(|&p| p != 0)
+}
+
+/// Focus the terminal window. On Windows, uses the stored MEATBAG_FOCUS_HWND.
+/// On WSL, spawns powershell.exe with WScript.Shell.AppActivate.
+/// If MEATBAG_FOCUS_CMD is set, runs that shell command instead.
+fn focus_window() {
+    if let Ok(cmd) = env::var("MEATBAG_FOCUS_CMD") {
+        if !cmd.is_empty() {
+            spawn_detached_shell(&cmd);
+            return;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(s) = env::var("MEATBAG_FOCUS_HWND") {
+            if let Ok(hwnd) = s.parse::<usize>() {
+                win32::focus_hwnd(hwnd);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        if !is_wsl() { return; }
+        let script = build_wsl_focus_script();
+        spawn_detached("powershell.exe", &[
+            "-NoProfile", "-NonInteractive", "-Command", &script,
+        ]);
+    }
+}
+
+/// Build a PowerShell one-liner that activates the terminal window.
+/// Uses WScript.Shell.AppActivate (fast, no C# compilation).
+/// If MEATBAG_FOCUS_HWND is set (WSL1), walks the process tree from that PID.
+/// Otherwise (WSL2) activates Windows Terminal by name.
+#[cfg(unix)]
+fn build_wsl_focus_script() -> String {
+    match env::var("MEATBAG_FOCUS_HWND") {
+        Ok(pid_str) if !pid_str.is_empty() => {
+            // WSL1: stored NtTgid is a Windows PID — walk up to find a focusable window
+            format!(
+                r#"$sh = New-Object -ComObject WScript.Shell
+$pid = {pid}
+for ($i = 0; $i -lt 10; $i++) {{
+    if ($sh.AppActivate($pid)) {{ break }}
+    $p = Get-CimInstance Win32_Process -Filter "ProcessId=$pid" -ErrorAction SilentlyContinue
+    if (-not $p -or $p.ParentProcessId -eq 0) {{ break }}
+    $pid = $p.ParentProcessId
+}}"#,
+                pid = pid_str
+            )
+        }
+        _ => {
+            // WSL2 fallback: activate Windows Terminal by title
+            "$null = (New-Object -ComObject WScript.Shell).AppActivate('Windows Terminal')".to_string()
+        }
     }
 }
 
@@ -640,6 +920,9 @@ fn run_escalation(delay_secs: u64) {
                 .stderr(Stdio::null())
                 .status();
             let _ = shell_result;
+            if focus_at("escalation") {
+                focus_window();
+            }
             let _ = fs::remove_file(pid_path(&dir));
             return;
         }
@@ -651,14 +934,14 @@ fn run_escalation(delay_secs: u64) {
         let flash_count: u32 = env::var("MEATBAG_FLASH_COUNT")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(2);
+            .unwrap_or(1);
         win32::flash_screen(flash_count);
     }
 
     let sound_repeat: u32 = env::var("MEATBAG_ESCALATION_REPEAT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
+        .unwrap_or(1);
 
     let sound = env::var("MEATBAG_ESCALATION_SOUND")
         .map(|s| normalize_path(&s))
@@ -670,6 +953,10 @@ fn run_escalation(delay_secs: u64) {
             }
             play_wav(&sound);
         }
+    }
+
+    if focus_at("escalation") {
+        focus_window();
     }
 
     let _ = fs::remove_file(pid_path(&dir));
@@ -713,7 +1000,7 @@ fn main() {
         }
         #[cfg(windows)]
         "_flash" => {
-            let count: u32 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(2);
+            let count: u32 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(1);
             win32::flash_screen(count);
             return;
         }
@@ -723,6 +1010,14 @@ fn main() {
     // CLI flags override env vars (and flow through to child processes)
     fn parse_flag(args: &[String], flag: &str) -> Option<String> {
         args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
+    }
+    fn parse_flag_opt_val(args: &[String], flag: &str, default_val: &str) -> Option<String> {
+        args.iter().position(|a| a == flag).map(|i| {
+            match args.get(i + 1) {
+                Some(v) if !v.starts_with('-') => v.clone(),
+                _ => default_val.to_string(),
+            }
+        })
     }
     if let Some(v) = parse_flag(&args, "--flash") {
         env::set_var("MEATBAG_FLASH_COUNT", &v);
@@ -742,6 +1037,15 @@ fn main() {
     }
     if let Some(v) = parse_flag(&args, "--escalation-sound") {
         env::set_var("MEATBAG_ESCALATION_SOUND", &v);
+    }
+    if let Some(v) = parse_flag(&args, "--player") {
+        env::set_var("MEATBAG_PLAYER", &v);
+    }
+    if let Some(v) = parse_flag_opt_val(&args, "--focus", "escalation") {
+        env::set_var("MEATBAG_FOCUS", &v);
+    }
+    if let Some(v) = parse_flag(&args, "--focus-cmd") {
+        env::set_var("MEATBAG_FOCUS_CMD", &v);
     }
 
     let dir = state_dir();
@@ -783,12 +1087,16 @@ fn main() {
     match action {
         "stop" => {
             let input = read_stdin_timeout(Duration::from_millis(100));
+            capture_focus_target();
+            if focus_at("notification") { focus_window(); }
             play_sound(&dir, cooldown);
             if message_is_question(&input) {
                 start_escalation(&dir, stop_delay);
             }
         }
         "permission" => {
+            capture_focus_target();
+            if focus_at("notification") { focus_window(); }
             play_sound(&dir, cooldown);
             start_escalation(&dir, permission_delay);
         }
@@ -829,15 +1137,18 @@ fn main() {
             eprintln!();
             eprintln!("Options (override env vars):");
             eprintln!("  --delay N     Seconds before escalation fires (default: 300 stop, 30 permission)");
-            eprintln!("  --flash N     Number of screen flashes on escalation (default: 2)");
-            eprintln!("  --repeat N    Number of times to play escalation sound (default: 2)");
+            eprintln!("  --flash N     Number of screen flashes on escalation (default: 1)");
+            eprintln!("  --repeat N    Number of times to play escalation sound (default: 1)");
             eprintln!("  --cooldown N  Suppress notification sound for N seconds after interaction (default: 30)");
             eprintln!("  --sound PATH  WAV file for notification sound");
             eprintln!("  --escalation-sound PATH  WAV file for escalation sound");
+            eprintln!("  --player CMD  Audio player command (default: paplay, aplay, or pw-play — whichever is found first)");
+            eprintln!("  --focus [EVENTS]  Focus terminal on nudge; EVENTS is comma-separated list of notification,escalation (default when flag present: escalation)");
+            eprintln!("  --focus-cmd CMD   Shell command to focus terminal, overrides built-in focus");
             eprintln!();
             eprintln!("Test commands:");
             eprintln!("  _play <path>  Play a WAV file synchronously");
-            eprintln!("  _flash [N]    Flash screen N times (default: 2)");
+            eprintln!("  _flash [N]    Flash screen N times (default: 1)");
             eprintln!("  _escalate <delay> [flash] [repeat]  Run escalation after delay");
             process::exit(1);
         }
