@@ -1025,12 +1025,16 @@ fn main() {
     match action {
         "stop" => {
             let input = read_stdin_timeout(Duration::from_millis(100));
+            capture_focus_target();
+            if focus_at("notification") { focus_window(); }
             play_sound(&dir, cooldown);
             if message_is_question(&input) {
                 start_escalation(&dir, stop_delay);
             }
         }
         "permission" => {
+            capture_focus_target();
+            if focus_at("notification") { focus_window(); }
             play_sound(&dir, cooldown);
             start_escalation(&dir, permission_delay);
         }
