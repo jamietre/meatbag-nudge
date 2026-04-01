@@ -97,3 +97,23 @@ fn notification_suppressed_by_cooldown() {
     env.run(&["stop", "--cooldown", "9999", "--delay", "999"]);
     env.assert_notif_absent_after(400);
 }
+
+/// Escalation fires after the delay when not cancelled.
+/// delay=2 ticks * TICK_MS=100ms = 200ms actual sleep.
+#[test]
+fn escalation_fires() {
+    let env = TestEnv::new();
+    env.run(&["stop", "--delay", "2", "--cooldown", "0"]);
+    assert!(env.wait_for_esc(700), "escalation sentinel should appear after delay");
+}
+
+/// Escalation does not fire when cancelled before the delay expires.
+#[test]
+fn escalation_cancelled() {
+    let env = TestEnv::new();
+    env.run(&["stop", "--delay", "5", "--cooldown", "0"]);
+    thread::sleep(Duration::from_millis(100));
+    env.run(&["cancel"]);
+    // delay=5 ticks = 500ms; wait 800ms to be sure it would have fired
+    env.assert_esc_absent_after(800);
+}
