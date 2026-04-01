@@ -619,7 +619,7 @@ fn focus_at(event: &str) -> bool {
 /// detached escalation child inherits it. Call this at the start of
 /// stop/permission handlers, before start_escalation.
 fn capture_focus_target() {
-    if !env::var("MEATBAG_FOCUS").map(|v| !v.is_empty()).unwrap_or(false) {
+    if env::var("MEATBAG_FOCUS").map(|v| v.is_empty()).unwrap_or(true) {
         return;
     }
     // Custom cmd needs no HWND — it handles its own window lookup.
@@ -952,6 +952,14 @@ fn main() {
     fn parse_flag(args: &[String], flag: &str) -> Option<String> {
         args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
     }
+    fn parse_flag_opt_val(args: &[String], flag: &str, default_val: &str) -> Option<String> {
+        args.iter().position(|a| a == flag).map(|i| {
+            match args.get(i + 1) {
+                Some(v) if !v.starts_with('-') => v.clone(),
+                _ => default_val.to_string(),
+            }
+        })
+    }
     if let Some(v) = parse_flag(&args, "--flash") {
         env::set_var("MEATBAG_FLASH_COUNT", &v);
     }
@@ -970,6 +978,12 @@ fn main() {
     }
     if let Some(v) = parse_flag(&args, "--escalation-sound") {
         env::set_var("MEATBAG_ESCALATION_SOUND", &v);
+    }
+    if let Some(v) = parse_flag_opt_val(&args, "--focus", "escalation") {
+        env::set_var("MEATBAG_FOCUS", &v);
+    }
+    if let Some(v) = parse_flag(&args, "--focus-cmd") {
+        env::set_var("MEATBAG_FOCUS_CMD", &v);
     }
 
     let dir = state_dir();
@@ -1062,6 +1076,8 @@ fn main() {
             eprintln!("  --cooldown N  Suppress notification sound for N seconds after interaction (default: 30)");
             eprintln!("  --sound PATH  WAV file for notification sound");
             eprintln!("  --escalation-sound PATH  WAV file for escalation sound");
+            eprintln!("  --focus [EVENTS]  Focus terminal on nudge; EVENTS is comma-separated list of notification,escalation (default when flag present: escalation)");
+            eprintln!("  --focus-cmd CMD   Shell command to focus terminal, overrides built-in focus");
             eprintln!();
             eprintln!("Test commands:");
             eprintln!("  _play <path>  Play a WAV file synchronously");
