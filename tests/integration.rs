@@ -142,3 +142,22 @@ fn permission_escalation_fires() {
     env.run(&["permission", "--delay", "2", "--cooldown", "0"]);
     assert!(env.wait_for_esc(700), "permission escalation sentinel should appear");
 }
+
+/// stop with a non-question message does not start an escalation.
+#[test]
+fn stop_no_escalation_for_statement() {
+    let env = TestEnv::new();
+    let payload = r#"{"last_assistant_message": "Task complete."}"#;
+    env.run_with_stdin(&["stop", "--delay", "2", "--cooldown", "0"], payload);
+    // delay=2 ticks = 200ms; wait 600ms — if escalation were coming it would have arrived
+    env.assert_esc_absent_after(600);
+}
+
+/// stop with a question-ending message starts an escalation.
+#[test]
+fn stop_escalation_for_question() {
+    let env = TestEnv::new();
+    let payload = r#"{"last_assistant_message": "Should I proceed?"}"#;
+    env.run_with_stdin(&["stop", "--delay", "2", "--cooldown", "0"], payload);
+    assert!(env.wait_for_esc(700), "escalation sentinel should appear for question message");
+}
