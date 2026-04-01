@@ -13,7 +13,8 @@ case "$(uname -s)" in
 esac
 
 is_wsl() {
-    grep -qi microsoft /proc/version 2>/dev/null
+    # WSL_DISTRO_NAME is set by WSL itself and works even with custom kernels
+    [ -n "${WSL_DISTRO_NAME:-}" ]
 }
 
 # Find the Windows claude-notify.exe binary from WSL.
@@ -293,18 +294,18 @@ build_from_source() {
     script_dir="$(cd "$(dirname "$0")" && pwd)"
 
     if ! command -v cargo &>/dev/null; then
-        echo "ERROR: cargo not found. Install the Rust toolchain:"
-        echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-        echo "  or: mise use -g rust@latest"
+        echo "ERROR: cargo not found. Install the Rust toolchain:" >&2
+        echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
+        echo "  or: mise use -g rust@latest" >&2
         exit 1
     fi
 
-    echo "Building from source..."
+    echo "Building from source..." >&2
     cd "$script_dir"
-    cargo build --release
+    cargo build --release >&2
     local built="target/release/${BINARY_NAME}${EXE_EXT}"
     if [ ! -f "$built" ]; then
-        echo "ERROR: Build succeeded but binary not found at $built"
+        echo "ERROR: Build succeeded but binary not found at $built" >&2
         exit 1
     fi
     echo "$script_dir/$built"
@@ -317,7 +318,7 @@ download_release() {
     elif command -v wget &>/dev/null; then
         downloader="wget"
     else
-        echo "ERROR: curl or wget is required to download releases."
+        echo "ERROR: curl or wget is required to download releases." >&2
         exit 1
     fi
 
@@ -333,12 +334,12 @@ download_release() {
     local tag
     tag=$(echo "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
     if [ -z "$tag" ]; then
-        echo "ERROR: Could not determine latest release tag. Check your internet connection"
-        echo "or visit https://github.com/${REPO}/releases to download manually."
+        echo "ERROR: Could not determine latest release tag. Check your internet connection" >&2
+        echo "or visit https://github.com/${REPO}/releases to download manually." >&2
         exit 1
     fi
 
-    echo "Latest release: $tag"
+    echo "Latest release: $tag" >&2
 
     # Pick the right asset
     local asset_name
@@ -353,7 +354,7 @@ download_release() {
     tmp_dir=$(mktemp -d)
     local archive="${tmp_dir}/${asset_name}"
 
-    echo "Downloading $asset_name..."
+    echo "Downloading $asset_name..." >&2
     if [ "$downloader" = "curl" ]; then
         curl -fsSL -o "$archive" "$download_url"
     else
@@ -362,15 +363,15 @@ download_release() {
 
     # Extract
     if [[ "$asset_name" == *.tar.gz ]]; then
-        tar -xzf "$archive" -C "$tmp_dir"
+        tar -xzf "$archive" -C "$tmp_dir" >&2
     else
-        unzip -q "$archive" -d "$tmp_dir"
+        unzip -q "$archive" -d "$tmp_dir" >&2
     fi
 
     local binary="${tmp_dir}/${BINARY_NAME}${EXE_EXT}"
     if [ ! -f "$binary" ]; then
-        echo "ERROR: Binary not found in archive. Contents:"
-        ls "$tmp_dir"
+        echo "ERROR: Binary not found in archive. Contents:" >&2
+        ls "$tmp_dir" >&2
         exit 1
     fi
 
