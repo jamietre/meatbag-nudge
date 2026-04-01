@@ -78,3 +78,22 @@ impl TestEnv {
         assert!(!self.esc_sentinel.exists(), "escalation sentinel should not exist");
     }
 }
+
+/// Notification fires immediately when cooldown is 0.
+#[test]
+fn notification_fires() {
+    let env = TestEnv::new();
+    env.run(&["stop", "--cooldown", "0", "--delay", "999"]);
+    assert!(env.wait_for_notif(500), "notification sentinel should appear");
+}
+
+/// Notification is suppressed when a prompt was recorded within the cooldown window.
+#[test]
+fn notification_suppressed_by_cooldown() {
+    let env = TestEnv::new();
+    env.run(&["prompt"]);
+    thread::sleep(Duration::from_millis(50));
+    // cooldown=9999 seconds — far beyond any real elapsed time
+    env.run(&["stop", "--cooldown", "9999", "--delay", "999"]);
+    env.assert_notif_absent_after(400);
+}
