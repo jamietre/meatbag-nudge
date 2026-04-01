@@ -1,5 +1,9 @@
 # claude-meatbag-nudge
 
+<p align="center">
+  <img src="assets/logo.png" alt="A robot poking a sleeping person" width="300">
+</p>
+
 Desktop notifications for Claude Code. Plays a sound when Claude needs attention and escalates if you don't respond.
 
 ## Quick install
