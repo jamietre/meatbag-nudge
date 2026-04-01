@@ -6,6 +6,9 @@ edition = "2021"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 opt-level = "s"
 lto = true

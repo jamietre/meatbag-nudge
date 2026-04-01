@@ -525,6 +525,16 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+/// Sleep for `secs` tick-units. In normal use one tick = 1 second.
+/// Set MEATBAG_TICK_MS to scale all delays for testing (e.g. 100 = 10× faster).
+fn tick_sleep(secs: u64) {
+    let ms = env::var("MEATBAG_TICK_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(1000);
+    std::thread::sleep(Duration::from_millis(secs * ms));
+}
+
 fn state_dir() -> String {
     env::var("MEATBAG_STATE_DIR").unwrap_or_else(|_| {
         #[cfg(unix)]
@@ -891,7 +901,7 @@ fn start_escalation(dir: &str, delay_secs: u64) {
 
 /// Internal: runs as a detached child process, sleeps, then fires escalation.
 fn run_escalation(delay_secs: u64) {
-    std::thread::sleep(Duration::from_secs(delay_secs));
+    tick_sleep(delay_secs);
 
     let dir = state_dir();
     let still_pending = fs::read_to_string(pid_path(&dir))
@@ -949,7 +959,7 @@ fn run_escalation(delay_secs: u64) {
     if !sound.is_empty() {
         for i in 0..sound_repeat {
             if i > 0 {
-                std::thread::sleep(Duration::from_secs(2));
+                tick_sleep(2);
             }
             play_wav(&sound);
         }
