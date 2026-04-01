@@ -57,6 +57,8 @@ Settings are configured via CLI flags on the hook commands in `~/.claude/setting
 | `--repeat N` | `1` | Number of times to play escalation sound |
 | `--sound PATH` | bundled `notification.wav` | Path to WAV for notification sound |
 | `--escalation-sound PATH` | bundled `escalation.wav` | Path to WAV for escalation sound |
+| `--focus [EVENTS]` | *(off)* | Focus terminal window on nudge; `EVENTS` is a comma-separated list of `notification`, `escalation`. Bare `--focus` defaults to `escalation`. |
+| `--focus-cmd CMD` | *(none)* | Shell command to run for focusing. Overrides built-in behaviour; timing controlled by `--focus`. |
 
 Example hook command in `settings.json`:
 
@@ -83,6 +85,8 @@ All settings can also be set via environment variables (e.g. in your shell profi
 | `MEATBAG_ESCALATION_REPEAT` | `--repeat` |
 | `MEATBAG_NOTIFICATION_SOUND` | `--sound` |
 | `MEATBAG_ESCALATION_SOUND` | `--escalation-sound` |
+| `MEATBAG_FOCUS` | `--focus` |
+| `MEATBAG_FOCUS_CMD` | `--focus-cmd` |
 | `MEATBAG_NOTIFICATION_CMD` | Custom shell command for notification (overrides sound) |
 | `MEATBAG_ESCALATION_CMD` | Custom shell command for escalation (overrides default) |
 | `MEATBAG_STATE_DIR` | Directory for state files (default: `/tmp/claude-notify`) |
