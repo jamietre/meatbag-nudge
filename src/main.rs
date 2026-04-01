@@ -606,6 +606,125 @@ fn play_wav(path: &str) {
     }
 }
 
+/// Returns true if focus should fire for the given event.
+/// event is "notification" or "escalation".
+/// MEATBAG_FOCUS is a comma-separated list, e.g. "notification,escalation".
+fn focus_at(event: &str) -> bool {
+    env::var("MEATBAG_FOCUS")
+        .map(|v| v.split(',').any(|e| e.trim() == event))
+        .unwrap_or(false)
+}
+
+/// Capture the terminal window identifier into MEATBAG_FOCUS_HWND so the
+/// detached escalation child inherits it. Call this at the start of
+/// stop/permission handlers, before start_escalation.
+fn capture_focus_target() {
+    if !env::var("MEATBAG_FOCUS").map(|v| !v.is_empty()).unwrap_or(false) {
+        return;
+    }
+    // Custom cmd needs no HWND — it handles its own window lookup.
+    if env::var("MEATBAG_FOCUS_CMD").map(|v| !v.is_empty()).unwrap_or(false) {
+        return;
+    }
+
+    #[cfg(windows)]
+    {
+        let hwnd = win32::find_terminal_hwnd();
+        if hwnd != 0 {
+            env::set_var("MEATBAG_FOCUS_HWND", hwnd.to_string());
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        if !is_wsl() { return; }
+        if let Some(nt_pid) = wsl_nt_parent_pid() {
+            env::set_var("MEATBAG_FOCUS_HWND", nt_pid.to_string());
+        }
+    }
+}
+
+/// On WSL1, read the Windows NT PID of the parent process from /proc/<ppid>/status
+/// via the NtTgid field. Returns None on WSL2 (field absent) or any read failure.
+#[cfg(unix)]
+fn wsl_nt_parent_pid() -> Option<u32> {
+    let self_status = fs::read_to_string("/proc/self/status").ok()?;
+    let ppid: u32 = self_status
+        .lines()
+        .find(|l| l.starts_with("PPid:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()?;
+    let parent_status = fs::read_to_string(format!("/proc/{}/status", ppid)).ok()?;
+    parent_status
+        .lines()
+        .find(|l| l.starts_with("NtTgid:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse::<u32>()
+        .ok()
+        .filter(|&p| p != 0)
+}
+
+/// Focus the terminal window. On Windows, uses the stored MEATBAG_FOCUS_HWND.
+/// On WSL, spawns powershell.exe with WScript.Shell.AppActivate.
+/// If MEATBAG_FOCUS_CMD is set, runs that shell command instead.
+fn focus_window() {
+    if let Ok(cmd) = env::var("MEATBAG_FOCUS_CMD") {
+        if !cmd.is_empty() {
+            spawn_detached_shell(&cmd);
+            return;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(s) = env::var("MEATBAG_FOCUS_HWND") {
+            if let Ok(hwnd) = s.parse::<usize>() {
+                win32::focus_hwnd(hwnd);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        if !is_wsl() { return; }
+        let script = build_wsl_focus_script();
+        spawn_detached("powershell.exe", &[
+            "-NoProfile", "-NonInteractive", "-Command", &script,
+        ]);
+    }
+}
+
+/// Build a PowerShell one-liner that activates the terminal window.
+/// Uses WScript.Shell.AppActivate (fast, no C# compilation).
+/// If MEATBAG_FOCUS_HWND is set (WSL1), walks the process tree from that PID.
+/// Otherwise (WSL2) activates Windows Terminal by name.
+#[cfg(unix)]
+fn build_wsl_focus_script() -> String {
+    match env::var("MEATBAG_FOCUS_HWND") {
+        Ok(pid_str) if !pid_str.is_empty() => {
+            // WSL1: stored NtTgid is a Windows PID — walk up to find a focusable window
+            format!(
+                r#"$sh = New-Object -ComObject WScript.Shell
+$pid = {pid}
+for ($i = 0; $i -lt 10; $i++) {{
+    if ($sh.AppActivate($pid)) {{ break }}
+    $p = Get-CimInstance Win32_Process -Filter "ProcessId=$pid" -ErrorAction SilentlyContinue
+    if (-not $p -or $p.ParentProcessId -eq 0) {{ break }}
+    $pid = $p.ParentProcessId
+}}"#,
+                pid = pid_str
+            )
+        }
+        _ => {
+            // WSL2 fallback: activate Windows Terminal by title
+            "$null = (New-Object -ComObject WScript.Shell).AppActivate('Windows Terminal')".to_string()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // State management
 // ---------------------------------------------------------------------------
