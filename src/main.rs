@@ -186,12 +186,17 @@ mod win32 {
         fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> usize;
         fn Process32FirstW(snapshot: usize, entry: *mut ProcessEntry32W) -> i32;
         fn Process32NextW(snapshot: usize, entry: *mut ProcessEntry32W) -> i32;
+        fn GetCurrentThreadId() -> u32;
     }
 
     #[link(name = "user32")]
     extern "system" {
         fn GetConsoleWindow() -> usize;
         fn SetForegroundWindow(hwnd: usize) -> i32;
+        fn BringWindowToTop(hwnd: usize) -> i32;
+        fn ShowWindow(hwnd: usize, cmd: i32) -> i32;
+        fn GetForegroundWindow() -> usize;
+        fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
         fn EnumWindows(callback: extern "system" fn(usize, isize) -> i32, lparam: isize) -> i32;
         fn GetWindowThreadProcessId(hwnd: usize, pid: *mut u32) -> u32;
         fn GetWindowLongPtrW(hwnd: usize, index: i32) -> isize;
@@ -365,9 +370,31 @@ mod win32 {
     }
 
     /// Bring the given window to the foreground. No-ops if hwnd is 0.
+    ///
+    /// Uses the AttachThreadInput trick to bypass Windows' background-process
+    /// restriction on SetForegroundWindow (which otherwise only flashes the
+    /// taskbar instead of actually stealing focus).
     pub fn focus_hwnd(hwnd: usize) {
-        if hwnd != 0 {
-            unsafe { SetForegroundWindow(hwnd); }
+        if hwnd == 0 { return; }
+        const SW_RESTORE: i32 = 9;
+        unsafe {
+            // Restore window if minimized
+            ShowWindow(hwnd, SW_RESTORE);
+
+            // Temporarily attach our input queue to the foreground window's
+            // thread so Windows allows us to steal foreground focus.
+            let fg_hwnd = GetForegroundWindow();
+            let fg_tid = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
+            let my_tid = GetCurrentThreadId();
+            if fg_tid != 0 && fg_tid != my_tid {
+                AttachThreadInput(my_tid, fg_tid, 1);
+                SetForegroundWindow(hwnd);
+                BringWindowToTop(hwnd);
+                AttachThreadInput(my_tid, fg_tid, 0);
+            } else {
+                SetForegroundWindow(hwnd);
+                BringWindowToTop(hwnd);
+            }
         }
     }
 }
