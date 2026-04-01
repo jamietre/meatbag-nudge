@@ -14,10 +14,6 @@ use std::sync::OnceLock;
 mod win32 {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static ENUM_FOUND_HWND: AtomicUsize = AtomicUsize::new(0);
-    static ENUM_TARGET_PID: AtomicUsize = AtomicUsize::new(0);
 
     const DETACHED_PROCESS: u32 = 0x00000008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
@@ -192,13 +188,19 @@ mod win32 {
         fn Process32NextW(snapshot: usize, entry: *mut ProcessEntry32W) -> i32;
     }
 
+    #[link(name = "user32")]
     extern "system" {
         fn GetConsoleWindow() -> usize;
         fn SetForegroundWindow(hwnd: usize) -> i32;
         fn EnumWindows(callback: extern "system" fn(usize, isize) -> i32, lparam: isize) -> i32;
         fn GetWindowThreadProcessId(hwnd: usize, pid: *mut u32) -> u32;
-        fn GetWindowLongW(hwnd: usize, index: i32) -> i32;
+        fn GetWindowLongPtrW(hwnd: usize, index: i32) -> isize;
         fn IsWindowVisible(hwnd: usize) -> i32;
+    }
+
+    struct EnumWindowsParam {
+        target_pid: u32,
+        found_hwnd: usize,
     }
 
     extern "system" fn flash_wnd_proc(hwnd: usize, msg: u32, wp: usize, lp: isize) -> isize {
@@ -296,17 +298,17 @@ mod win32 {
         })
     }
 
-    extern "system" fn enum_window_cb(hwnd: usize, _: isize) -> i32 {
-        let target = ENUM_TARGET_PID.load(Ordering::Relaxed) as u32;
+    extern "system" fn enum_window_cb(hwnd: usize, lparam: isize) -> i32 {
+        let param = unsafe { &mut *(lparam as *mut EnumWindowsParam) };
         unsafe {
             let mut pid: u32 = 0;
             GetWindowThreadProcessId(hwnd, &mut pid);
-            if pid == target && IsWindowVisible(hwnd) != 0 {
+            if pid == param.target_pid && IsWindowVisible(hwnd) != 0 {
                 const GWL_STYLE: i32 = -16;
                 const WS_CHILD: u32 = 0x40000000;
-                let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
                 if style & WS_CHILD == 0 {
-                    ENUM_FOUND_HWND.store(hwnd, Ordering::Relaxed);
+                    param.found_hwnd = hwnd;
                     return 0; // stop enumeration
                 }
             }
@@ -315,10 +317,9 @@ mod win32 {
     }
 
     fn main_window_for_pid(pid: u32) -> usize {
-        ENUM_FOUND_HWND.store(0, Ordering::Relaxed);
-        ENUM_TARGET_PID.store(pid as usize, Ordering::Relaxed);
-        unsafe { EnumWindows(enum_window_cb, 0); }
-        ENUM_FOUND_HWND.load(Ordering::Relaxed)
+        let mut param = EnumWindowsParam { target_pid: pid, found_hwnd: 0 };
+        unsafe { EnumWindows(enum_window_cb, &mut param as *mut EnumWindowsParam as isize); }
+        param.found_hwnd
     }
 
     fn parent_pid(pid: u32) -> Option<u32> {
