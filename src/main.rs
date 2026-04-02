@@ -201,6 +201,8 @@ mod win32 {
         fn GetWindowThreadProcessId(hwnd: usize, pid: *mut u32) -> u32;
         fn GetWindowLongPtrW(hwnd: usize, index: i32) -> isize;
         fn IsWindowVisible(hwnd: usize) -> i32;
+        fn IsIconic(hwnd: usize) -> i32;
+        fn GetAncestor(hwnd: usize, flags: u32) -> usize;
     }
 
     struct EnumWindowsParam {
@@ -377,13 +379,38 @@ mod win32 {
     pub fn focus_hwnd(hwnd: usize) {
         if hwnd == 0 { return; }
         const SW_RESTORE: i32 = 9;
+        const GA_ROOT: u32 = 2;
         unsafe {
-            // Restore window if minimized
-            ShowWindow(hwnd, SW_RESTORE);
+            // Normalize to the root (top-level) window. GetConsoleWindow() can
+            // return a pseudo-console child HWND embedded inside Windows Terminal
+            // that belongs to a different process (conhost.exe) than the wt.exe
+            // frame. Operating on the child HWND directly confuses Windows Terminal
+            // and can cause it to un-maximize or rearrange panes.
+            let hwnd = {
+                let root = GetAncestor(hwnd, GA_ROOT);
+                if root != 0 { root } else { hwnd }
+            };
+
+            // If the app that owns our target window already has foreground
+            // focus (e.g. Claude is running in a VSCode terminal and the user
+            // is typing in the editor), skip the focus steal entirely.
+            let fg_hwnd = GetForegroundWindow();
+            let mut fg_pid: u32 = 0;
+            GetWindowThreadProcessId(fg_hwnd, &mut fg_pid);
+            let mut target_pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut target_pid);
+            if fg_pid != 0 && fg_pid == target_pid {
+                return;
+            }
+
+            // Restore window only if minimized — SW_RESTORE also un-maximizes
+            // fullscreen windows, so guard with IsIconic first.
+            if IsIconic(hwnd) != 0 {
+                ShowWindow(hwnd, SW_RESTORE);
+            }
 
             // Temporarily attach our input queue to the foreground window's
             // thread so Windows allows us to steal foreground focus.
-            let fg_hwnd = GetForegroundWindow();
             let fg_tid = GetWindowThreadProcessId(fg_hwnd, std::ptr::null_mut());
             let my_tid = GetCurrentThreadId();
             if fg_tid != 0 && fg_tid != my_tid {
@@ -538,11 +565,11 @@ fn tick_sleep(secs: u64) {
 fn state_dir() -> String {
     env::var("MEATBAG_STATE_DIR").unwrap_or_else(|_| {
         #[cfg(unix)]
-        { "/tmp/claude-notify".into() }
+        { "/tmp/meatbag-nudge".into() }
         #[cfg(windows)]
         {
             let tmp = env::var("TEMP").unwrap_or_else(|_| r"C:\Temp".into());
-            format!(r"{}\claude-notify", tmp)
+            format!(r"{}\meatbag-nudge", tmp)
         }
     })
 }
@@ -987,6 +1014,114 @@ fn handle_prompt(dir: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// Settings management (install-hooks / remove-hooks subcommands)
+// ---------------------------------------------------------------------------
+
+fn claude_settings_path() -> PathBuf {
+    #[cfg(windows)]
+    {
+        let profile = env::var("USERPROFILE").unwrap_or_default();
+        PathBuf::from(profile).join(".claude").join("settings.json")
+    }
+    #[cfg(not(windows))]
+    {
+        let home = env::var("HOME").unwrap_or_default();
+        PathBuf::from(home).join(".claude").join("settings.json")
+    }
+}
+
+fn hook_entry(cmd: &str) -> serde_json::Value {
+    serde_json::json!([{"hooks": [{"type": "command", "command": cmd}]}])
+}
+
+fn run_install_hooks(args: &[String]) -> i32 {
+    fn flag(args: &[String], name: &str) -> Option<String> {
+        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    }
+
+    let settings = flag(args, "--settings").map(PathBuf::from)
+        .unwrap_or_else(claude_settings_path);
+    let binary = flag(args, "--binary").unwrap_or_else(|| "meatbag-nudge".to_string());
+    let stop_cmd = flag(args, "--stop").unwrap_or_default();
+    let perm_cmd = flag(args, "--permission").unwrap_or_default();
+    let overwrite = args.iter().any(|a| a == "--overwrite");
+
+    let existing = fs::read_to_string(&settings).unwrap_or_else(|_| "{}".to_string());
+    let mut data: serde_json::Value = serde_json::from_str(&existing)
+        .unwrap_or_else(|_| serde_json::json!({}));
+
+    if !overwrite {
+        let hooks_str = data.get("hooks").map(|h| h.to_string()).unwrap_or_default();
+        if hooks_str.contains("meatbag-nudge") {
+            eprint!("Hooks already exist. Overwrite? [y/N]: ");
+            let _ = io::stdout().flush();
+            let mut response = String::new();
+            let _ = io::stdin().read_line(&mut response);
+            if !response.trim().eq_ignore_ascii_case("y") {
+                eprintln!("Keeping existing hooks.");
+                return 0;
+            }
+        }
+    }
+
+    let cancel_cmd  = format!("\"{}\" cancel", binary);
+    let dismiss_cmd = format!("\"{}\" dismiss", binary);
+    let prompt_cmd  = format!("\"{}\" prompt", binary);
+
+    if let Some(obj) = data.as_object_mut() {
+        let hooks = obj.entry("hooks").or_insert_with(|| serde_json::json!({}));
+        if let Some(h) = hooks.as_object_mut() {
+            h.insert("Stop".into(),                hook_entry(&stop_cmd));
+            h.insert("PermissionRequest".into(),   hook_entry(&perm_cmd));
+            h.insert("PostToolUse".into(),          hook_entry(&cancel_cmd));
+            h.insert("PostToolUseFailure".into(),   hook_entry(&dismiss_cmd));
+            h.insert("UserPromptSubmit".into(),     hook_entry(&prompt_cmd));
+        }
+    }
+
+    if let Some(parent) = settings.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(&data) {
+        Ok(out) => match fs::write(&settings, out) {
+            Ok(_)  => { eprintln!("Hooks configured in {}", settings.display()); 0 }
+            Err(e) => { eprintln!("Error writing {}: {}", settings.display(), e); 1 }
+        },
+        Err(e) => { eprintln!("Error serialising settings: {}", e); 1 }
+    }
+}
+
+fn run_remove_hooks(args: &[String]) -> i32 {
+    fn flag(args: &[String], name: &str) -> Option<String> {
+        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    }
+
+    let settings = flag(args, "--settings").map(PathBuf::from)
+        .unwrap_or_else(claude_settings_path);
+
+    let existing = match fs::read_to_string(&settings) {
+        Ok(s)  => s,
+        Err(_) => return 0,
+    };
+    let mut data: serde_json::Value = match serde_json::from_str(&existing) {
+        Ok(v)  => v,
+        Err(_) => return 0,
+    };
+
+    if let Some(hooks) = data.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+        hooks.retain(|_, v| !v.to_string().contains("meatbag-nudge"));
+    }
+
+    match serde_json::to_string_pretty(&data) {
+        Ok(out) => match fs::write(&settings, out) {
+            Ok(_)  => { eprintln!("Hooks removed from {}", settings.display()); 0 }
+            Err(e) => { eprintln!("Error writing {}: {}", settings.display(), e); 1 }
+        },
+        Err(e) => { eprintln!("Error serialising settings: {}", e); 1 }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1116,6 +1251,12 @@ fn main() {
             record_interaction(&dir);
             cancel_pending(&dir);
         }
+        "install-hooks" => {
+            process::exit(run_install_hooks(&args));
+        }
+        "remove-hooks" => {
+            process::exit(run_remove_hooks(&args));
+        }
         "debug" => {
             // Dump action + stdin to a log file for inspecting hook payloads
             let label = args.get(2).map(|s| s.as_str()).unwrap_or("unknown");
@@ -1136,7 +1277,7 @@ fn main() {
             eprintln!("Logged to {}", log.display());
         }
         _ => {
-            eprintln!("Usage: claude-notify <action> [options]");
+            eprintln!("Usage: meatbag-nudge <action> [options]");
             eprintln!();
             eprintln!("Actions:");
             eprintln!("  stop          Play notification sound, schedule escalation");

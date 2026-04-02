@@ -3,7 +3,7 @@ set -euo pipefail
 
 INSTALL_DIR="${HOME}/.local/bin"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
-BINARY_NAME="claude-notify"
+BINARY_NAME="meatbag-nudge"
 REPO="jamietre/meatbag-nudge"
 
 # Detect platform
@@ -17,25 +17,25 @@ is_wsl() {
     [ -n "${WSL_DISTRO_NAME:-}" ]
 }
 
-# Find the Windows claude-notify.exe binary from WSL.
-# Returns "claude-notify.exe" if on PATH via interop, or the full WSL path if found
+# Find the Windows meatbag-nudge.exe binary from WSL.
+# Returns "meatbag-nudge.exe" if on PATH via interop, or the full WSL path if found
 # in the standard Windows install location. Prints nothing if not found.
 find_windows_binary() {
-    if command -v claude-notify.exe &>/dev/null 2>&1; then
-        echo "claude-notify.exe"
+    if command -v meatbag-nudge.exe &>/dev/null 2>&1; then
+        echo "meatbag-nudge.exe"
         return
     fi
     local win_home
     win_home=$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r\n')" 2>/dev/null) || true
-    if [ -n "$win_home" ] && [ -f "$win_home/.local/bin/claude-notify.exe" ]; then
-        echo "$win_home/.local/bin/claude-notify.exe"
+    if [ -n "$win_home" ] && [ -f "$win_home/.local/bin/meatbag-nudge.exe" ]; then
+        echo "$win_home/.local/bin/meatbag-nudge.exe"
         return
     fi
     echo ""
 }
 
 handle_wsl_install() {
-    echo "  WSL detected — claude-notify uses the Windows binary for native audio and screen flash."
+    echo "  WSL detected — meatbag-nudge uses the Windows binary for native audio and screen flash."
     echo ""
 
     local win_binary
@@ -46,7 +46,7 @@ handle_wsl_install() {
 
   ERROR: Windows binary not found.
 
-  In WSL, claude-notify delegates to the native Windows binary for audio
+  In WSL, meatbag-nudge delegates to the native Windows binary for audio
   and screen flash. Please install it on Windows first:
 
     1. Open a Windows terminal (PowerShell, cmd, or Git Bash — not WSL)
@@ -54,7 +54,7 @@ handle_wsl_install() {
     3. Re-run this installer in WSL
 
   Ensure %USERPROFILE%\.local\bin is on your Windows PATH so that
-  claude-notify.exe is accessible from WSL.
+  meatbag-nudge.exe is accessible from WSL.
 
 EOF
         exit 1
@@ -64,7 +64,7 @@ EOF
 
     if $UNINSTALL; then
         echo "Removing hooks..."
-        remove_hooks
+        remove_hooks "$win_binary"
         echo "Done."
         exit 0
     fi
@@ -74,7 +74,7 @@ EOF
     fi
 
     echo ""
-    echo "Done! Test with: claude-notify.exe stop --delay 3"
+    echo "Done! Test with: meatbag-nudge.exe stop --delay 3"
     exit 0
 }
 
@@ -100,11 +100,6 @@ prompt_value() {
 
 configure_hooks() {
     local binary="${1:-$BINARY_NAME}"
-    if ! command -v jq &>/dev/null; then
-        echo "WARNING: jq not found — cannot auto-configure."
-        echo "Add hooks manually to $SETTINGS_FILE (see README)."
-        return
-    fi
 
     if [ ! -f "$SETTINGS_FILE" ]; then
         mkdir -p "$(dirname "$SETTINGS_FILE")"
@@ -173,27 +168,30 @@ configure_hooks() {
     local dismiss_cmd="\"$binary\" dismiss"
     local prompt_cmd="\"$binary\" prompt"
 
-    # Check if hooks already reference claude-notify
-    if grep -q "claude-notify" "$SETTINGS_FILE" 2>/dev/null; then
+    # Determine overwrite flag
+    local overwrite_flag=""
+    if grep -q "meatbag-nudge" "$SETTINGS_FILE" 2>/dev/null; then
         echo ""
         read -rp "Hooks already exist. Overwrite? [y/N]: " overwrite </dev/tty
         if [[ ! "$overwrite" =~ ^[Yy] ]]; then
             echo "Keeping existing hooks."
             return
         fi
+        overwrite_flag="--overwrite"
     fi
 
-    local tmp
-    tmp=$(mktemp)
-    jq --arg stop "$stop_cmd" --arg perm "$perm_cmd" \
-       --arg cancel "$cancel_cmd" --arg dismiss "$dismiss_cmd" \
-       --arg prompt "$prompt_cmd" '
-      .hooks.PostToolUse = [{"hooks": [{"type": "command", "command": $cancel}]}] |
-      .hooks.PostToolUseFailure = [{"hooks": [{"type": "command", "command": $dismiss}]}] |
-      .hooks.Stop = [{"hooks": [{"type": "command", "command": $stop}]}] |
-      .hooks.PermissionRequest = [{"hooks": [{"type": "command", "command": $perm}]}] |
-      .hooks.UserPromptSubmit = [{"hooks": [{"type": "command", "command": $prompt}]}]
-    ' "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
+    # For WSL, the binary is a Windows .exe — pass the Windows-format settings path
+    local settings_arg=""
+    if [[ "$binary" == *.exe ]] && command -v wslpath &>/dev/null; then
+        settings_arg="--settings $(wslpath -w "$SETTINGS_FILE")"
+    fi
+
+    "$binary" install-hooks \
+        --binary "$binary" \
+        --stop "$stop_cmd" \
+        --permission "$perm_cmd" \
+        $settings_arg \
+        $overwrite_flag
     echo "Hooks configured in $SETTINGS_FILE"
 
     report_default_sounds "$INSTALL_DIR"
@@ -286,21 +284,15 @@ report_default_sounds() {
 }
 
 remove_hooks() {
-    if ! command -v jq &>/dev/null; then
-        echo "WARNING: jq not found — remove claude-notify hooks manually from $SETTINGS_FILE"
-        return
-    fi
+    local binary="${1:-$BINARY}"
     if [ ! -f "$SETTINGS_FILE" ]; then
         return
     fi
-
-    local tmp
-    tmp=$(mktemp)
-    jq '
-      .hooks |= with_entries(
-        select(.value | tostring | test("claude-notify") | not)
-      )
-    ' "$SETTINGS_FILE" > "$tmp" && mv "$tmp" "$SETTINGS_FILE"
+    if [ ! -x "$binary" ] && ! command -v "$binary" &>/dev/null; then
+        echo "WARNING: binary not found — remove meatbag-nudge hooks manually from $SETTINGS_FILE"
+        return
+    fi
+    "$binary" remove-hooks
     echo "Hooks removed from $SETTINGS_FILE"
 }
 
@@ -359,9 +351,9 @@ download_release() {
     # Pick the right asset
     local asset_name
     if [ "$PLATFORM" = "windows" ]; then
-        asset_name="claude-notify-windows-x86_64.zip"
+        asset_name="meatbag-nudge-windows-x86_64.zip"
     else
-        asset_name="claude-notify-linux-x86_64.tar.gz"
+        asset_name="meatbag-nudge-linux-x86_64.tar.gz"
     fi
 
     local download_url="https://github.com/${REPO}/releases/download/${tag}/${asset_name}"
@@ -436,7 +428,7 @@ cat <<'BANNER'
   This installer will:
     1. Download the latest release binary from GitHub (or build from source with --build)
     2. Copy the binary to ~/.local/bin/
-    3. Add notification hooks to ~/.claude/settings.json (requires jq)
+    3. Add notification hooks to ~/.claude/settings.json
 
 BANNER
 
@@ -445,9 +437,9 @@ if is_wsl; then
 fi
 
 if $UNINSTALL; then
-    echo "Uninstalling claude-meatbag-nudge..."
+    echo "Uninstalling meatbag-nudge..."
+    remove_hooks "$BINARY"
     rm -f "$BINARY"
-    remove_hooks
     echo "Done."
     exit 0
 fi
@@ -481,8 +473,8 @@ fi
 
 # Configure hooks
 if ! $NO_HOOKS; then
-    configure_hooks
+    configure_hooks "$BINARY"
 fi
 
 echo ""
-echo "Done! Test with: claude-notify stop --delay 3"
+echo "Done! Test with: meatbag-nudge stop --delay 3"

@@ -1,10 +1,10 @@
-# claude-meatbag-nudge
+# meatbag-nudge
 
 <p align="center">
   <img src="assets/logo.png" alt="A robot poking a sleeping person" width="300">
 </p>
 
-Desktop notifications for Claude Code. Plays a sound when Claude needs attention and escalates if you don't respond.
+Desktop notifications for Claude Code. Plays a sound, flashes the screen, and/or focuses the window when Claude needs attention.
 
 ## Quick install
 
@@ -14,16 +14,14 @@ One-liner — downloads the latest release binary from GitHub (no Rust required)
 curl -fsSL https://raw.githubusercontent.com/jamietre/meatbag-nudge/master/install.sh | bash
 ```
 
-Or, if you have the repo checked out:
+The script will download and configure this for your local claude code:
 
-```bash
-bash install.sh
-```
-
-The script will:
 1. Download the latest release binary for your platform from GitHub
 2. Copy the binary to `~/.local/bin/`
-3. Add hooks to `~/.claude/settings.json` (requires `jq`)
+3. Add hooks to `~/.claude/settings.json`
+
+The script is self guiding, and should work for most situations. If you're running on Windows and you want it to work in WSL too, install it on windows first, then run the script
+in WSL. It will use the Windows binary which will be much less fussy to interact with your machine's sound stack than WSL. And you only need to have it installed in one place this way.
 
 Options:
 - `--dir <path>` — custom install directory (default: `~/.local/bin`)
@@ -35,7 +33,6 @@ The installer uses bare command names in hooks (`claude-notify stop` etc.) so a 
 ### Prerequisites
 
 - **curl** or **wget** — for downloading the release binary (pre-installed on most systems)
-- **jq** — for auto-configuring hooks in settings.json
 - **Linux/WSL**: `paplay` (PulseAudio) for sound — typically pre-installed with WSLg
 
 To build from source instead of downloading, pass `--build` (requires the **Rust** toolchain via [mise](https://mise.jdx.dev/) or [rustup](https://rustup.rs/)).
