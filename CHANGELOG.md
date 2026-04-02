@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-02
+
 ### Added
 - **`install-hooks` / `remove-hooks` subcommands** — binary now manages `settings.json` directly using `serde_json`, eliminating the `jq` prerequisite for hook configuration
 
@@ -33,5 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Custom notification/escalation command support via `MEATBAG_NOTIFICATION_CMD` / `MEATBAG_ESCALATION_CMD`
 - `install.sh` — builds, installs binary + sounds, and auto-configures Claude Code hooks
 
-[Unreleased]: https://github.com/jamietre/meatbag-nudge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jamietre/meatbag-nudge/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jamietre/meatbag-nudge/compare/v0.0.0...v0.2.0
 [0.1.0]: https://github.com/jamietre/meatbag-nudge/releases/tag/v0.1.0
