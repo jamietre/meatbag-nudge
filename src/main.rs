@@ -202,6 +202,7 @@ mod win32 {
         fn GetWindowLongPtrW(hwnd: usize, index: i32) -> isize;
         fn IsWindowVisible(hwnd: usize) -> i32;
         fn IsIconic(hwnd: usize) -> i32;
+        fn GetAncestor(hwnd: usize, flags: u32) -> usize;
     }
 
     struct EnumWindowsParam {
@@ -378,12 +379,21 @@ mod win32 {
     pub fn focus_hwnd(hwnd: usize) {
         if hwnd == 0 { return; }
         const SW_RESTORE: i32 = 9;
+        const GA_ROOT: u32 = 2;
         unsafe {
+            // Normalize to the root (top-level) window. GetConsoleWindow() can
+            // return a pseudo-console child HWND embedded inside Windows Terminal
+            // that belongs to a different process (conhost.exe) than the wt.exe
+            // frame. Operating on the child HWND directly confuses Windows Terminal
+            // and can cause it to un-maximize or rearrange panes.
+            let hwnd = {
+                let root = GetAncestor(hwnd, GA_ROOT);
+                if root != 0 { root } else { hwnd }
+            };
+
             // If the app that owns our target window already has foreground
             // focus (e.g. Claude is running in a VSCode terminal and the user
-            // is typing in the editor), skip the focus steal entirely.  Just
-            // doing SetForegroundWindow in that situation can cause the host
-            // app to resize or rearrange its layout unexpectedly.
+            // is typing in the editor), skip the focus steal entirely.
             let fg_hwnd = GetForegroundWindow();
             let mut fg_pid: u32 = 0;
             GetWindowThreadProcessId(fg_hwnd, &mut fg_pid);
