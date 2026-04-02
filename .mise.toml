@@ -13,6 +13,32 @@ run = "cargo build --release --target x86_64-pc-windows-gnu"
 description = "Cross-compile for Linux x86_64 from Windows (requires WSL or cross)"
 run = "cargo build --release --target x86_64-unknown-linux-gnu"
 
+[tasks.release]
+description = "Tag and push a release (usage: mise run release <version>, e.g. mise run release 0.2.0)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+VERSION="${1:-}"
+if [ -z "$VERSION" ]; then
+  echo "Usage: mise run release <version>  (e.g. 0.2.0)"
+  exit 1
+fi
+TAG="v$VERSION"
+TODAY=$(date +%Y-%m-%d)
+
+# Move [Unreleased] entries to a versioned section in CHANGELOG.md
+sed -i "s/^## \\[Unreleased\\]/## [Unreleased]\\n\\n## [$VERSION] - $TODAY/" CHANGELOG.md
+# Add the comparison link
+sed -i "s|^\\[Unreleased\\]:.*|[Unreleased]: https://github.com/jamietre/meatbag-nudge/compare/$TAG...HEAD\\n[$VERSION]: https://github.com/jamietre/meatbag-nudge/compare/v$(git describe --tags --abbrev=0 2>/dev/null || echo 0.0.0)...$TAG|" CHANGELOG.md
+
+git add CHANGELOG.md
+git commit -m "chore: release $TAG"
+git tag "$TAG"
+git push origin master
+git push origin "$TAG"
+echo "Released $TAG — GitHub Actions will build and publish the release."
+"""
+
 [tasks.setup-cross]
 description = "Install cross-compilation targets"
 run = """
