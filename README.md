@@ -14,23 +14,25 @@ One-liner — downloads the latest release binary from GitHub (no Rust required)
 curl -fsSL https://raw.githubusercontent.com/jamietre/meatbag-nudge/master/install.sh | bash
 ```
 
-The script will download and configure this for your local claude code.
+The script will download and configure this for your local claude code:
 
 1. Download the latest release binary for your platform from GitHub
 2. Copy the binary to `~/.local/bin/`
-3. Add hooks to `~/.claude/settings.json` (requires `jq`)
+3. Add hooks to `~/.claude/settings.json`
+
+The script is self guiding, and should work for most situations. If you're running on Windows and you want it to work in WSL too, install it on windows first, then run the script
+in WSL. It will use the Windows binary which will be much less fussy to interact with your machine's sound stack than WSL. And you only need to have it installed in one place this way.
 
 Options:
 - `--dir <path>` — custom install directory (default: `~/.local/bin`)
 - `--no-hooks` — skip adding hooks to settings.json
 - `--uninstall` — remove binary, sounds, and hooks
 
-The installer uses bare command names in hooks (`meatbag-nudge stop` etc.) so a shared `settings.json` works across platforms as long as the binary is on PATH.
+The installer uses bare command names in hooks (`claude-notify stop` etc.) so a shared `settings.json` works across platforms as long as the binary is on PATH.
 
 ### Prerequisites
 
 - **curl** or **wget** — for downloading the release binary (pre-installed on most systems)
-- **jq** — for auto-configuring hooks in settings.json
 - **Linux/WSL**: `paplay` (PulseAudio) for sound — typically pre-installed with WSLg
 
 To build from source instead of downloading, pass `--build` (requires the **Rust** toolchain via [mise](https://mise.jdx.dev/) or [rustup](https://rustup.rs/)).
@@ -63,13 +65,13 @@ Settings are configured via CLI flags on the hook commands in `~/.claude/setting
 Example hook command in `settings.json`:
 
 ```json
-"command": "meatbag-nudge stop --delay 300 --cooldown 5 --flash 1 --repeat 1"
+"command": "claude-notify stop --delay 300 --cooldown 5 --flash 1 --repeat 1"
 ```
 
 Flags are also useful for testing from the command line:
 
 ```bash
-meatbag-nudge stop --delay 3 --flash 2 --repeat 2
+claude-notify stop --delay 3 --flash 2 --repeat 2
 ```
 
 ### Environment variables
@@ -90,7 +92,7 @@ All settings can also be set via environment variables (e.g. in your shell profi
 | `MEATBAG_FOCUS_CMD` | `--focus-cmd` |
 | `MEATBAG_NOTIFICATION_CMD` | Custom shell command for notification (overrides sound) |
 | `MEATBAG_ESCALATION_CMD` | Custom shell command for escalation (overrides default) |
-| `MEATBAG_STATE_DIR` | Directory for state files (default: `/tmp/meatbag-nudge`) |
+| `MEATBAG_STATE_DIR` | Directory for state files (default: `/tmp/claude-notify`) |
 
 ### Sound paths
 
@@ -126,7 +128,7 @@ When running inside tmux, the handler auto-detects the pane context and passes i
 
 ```bash
 mise install       # install Rust toolchain
-mise run build     # build for current platform → target/release/meatbag-nudge[.exe]
+mise run build     # build for current platform → target/release/claude-notify[.exe]
 ```
 
 The native build uses your platform's default toolchain (MSVC on Windows, GNU on Linux).
@@ -137,8 +139,8 @@ To build for the other platform from Linux:
 
 ```bash
 mise run setup-cross     # install cross-compilation targets (one-time)
-mise run cross-windows   # → target/x86_64-pc-windows-gnu/release/meatbag-nudge.exe
-mise run cross-linux     # → target/x86_64-unknown-linux-gnu/release/meatbag-nudge
+mise run cross-windows   # → target/x86_64-pc-windows-gnu/release/claude-notify.exe
+mise run cross-linux     # → target/x86_64-unknown-linux-gnu/release/claude-notify
 ```
 
 Cross-compiling to Windows from Linux requires `mingw-w64` (`sudo apt install mingw-w64`). Cross-compiling to Linux from Windows requires WSL or [cross](https://github.com/cross-rs/cross).
@@ -156,7 +158,7 @@ Cross-compiling to Windows from Linux requires `mingw-w64` (`sudo apt install mi
 - Sound playback via Win32 `PlaySoundW` (winmm.dll)
 - Screen flash via temporary layered window (user32.dll)
 - Detached processes via `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS`
-- State directory defaults to `%TEMP%\meatbag-nudge`
+- State directory defaults to `%TEMP%\claude-notify`
 
 ## Uninstall
 

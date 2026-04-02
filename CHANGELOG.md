@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`install-hooks` / `remove-hooks` subcommands** — binary now manages `settings.json` directly using `serde_json`, eliminating the `jq` prerequisite for hook configuration
+
+### Fixed
+- **Focus no-op when app already has focus** — skip `SetForegroundWindow` entirely if the foreground window belongs to the same process as the target (prevents intercepting keystrokes in VSCode editor when Claude runs in an integrated terminal)
+- **Focus causing window resize** — `SW_RESTORE` now only fires when the window is actually minimized (guarded by `IsIconic`); previously it would un-fullscreen maximised windows
+- **Uninstall ordering** — hooks are now removed before the binary is deleted, so `remove-hooks` can run successfully
+
 ## [0.1.0] - 2026-03-24
 
 ### Added
