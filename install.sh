@@ -192,7 +192,6 @@ configure_hooks() {
         --permission "$perm_cmd" \
         $settings_arg \
         $overwrite_flag
-    echo "Hooks configured in $SETTINGS_FILE"
 
     report_default_sounds "$INSTALL_DIR"
 }
@@ -293,7 +292,6 @@ remove_hooks() {
         return
     fi
     "$binary" remove-hooks
-    echo "Hooks removed from $SETTINGS_FILE"
 }
 
 build_from_source() {
