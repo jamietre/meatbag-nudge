@@ -1121,6 +1121,106 @@ fn run_remove_hooks(args: &[String]) -> i32 {
     }
 }
 
+/// Replace the binary reference at the start of a hook command string with
+/// `new_binary`, preserving the subcommand and all flags.
+/// Handles both quoted (`"path" args`) and unquoted (`path args`) forms.
+fn rewrite_cmd_binary(cmd: &str, new_binary: &str) -> String {
+    let rest = if let Some(after_open) = cmd.strip_prefix('"') {
+        // Find the closing quote after the opening one
+        after_open.find('"').map(|i| &cmd[i + 2..]).unwrap_or("")
+    } else {
+        cmd.find(' ').map(|i| &cmd[i..]).unwrap_or("")
+    };
+    format!("\"{}\"{}",  new_binary, rest)
+}
+
+fn run_copy_hooks(args: &[String]) -> i32 {
+    fn flag(args: &[String], name: &str) -> Option<String> {
+        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+    }
+
+    let from = match flag(args, "--from").map(PathBuf::from) {
+        Some(p) => p,
+        None => { eprintln!("copy-hooks: --from <source-settings> is required"); return 1; }
+    };
+    let binary  = flag(args, "--binary").unwrap_or_else(|| "meatbag-nudge".to_string());
+    let settings = flag(args, "--settings").map(PathBuf::from)
+        .unwrap_or_else(claude_settings_path);
+    let overwrite = args.iter().any(|a| a == "--overwrite");
+
+    let src_str = match fs::read_to_string(&from) {
+        Ok(s)  => s,
+        Err(e) => { eprintln!("copy-hooks: cannot read {}: {}", from.display(), e); return 1; }
+    };
+    let src_data: serde_json::Value = match serde_json::from_str(&src_str) {
+        Ok(v)  => v,
+        Err(e) => { eprintln!("copy-hooks: invalid JSON in {}: {}", from.display(), e); return 1; }
+    };
+
+    let existing = fs::read_to_string(&settings).unwrap_or_else(|_| "{}".to_string());
+    let mut data: serde_json::Value = serde_json::from_str(&existing)
+        .unwrap_or_else(|_| serde_json::json!({}));
+
+    if !overwrite {
+        let hooks_str = data.get("hooks").map(|h| h.to_string()).unwrap_or_default();
+        if hooks_str.contains("meatbag-nudge") {
+            eprint!("Hooks already exist. Overwrite? [y/N]: ");
+            let _ = io::stdout().flush();
+            let mut response = String::new();
+            let _ = io::stdin().read_line(&mut response);
+            if !response.trim().eq_ignore_ascii_case("y") {
+                eprintln!("Keeping existing hooks.");
+                return 0;
+            }
+        }
+    }
+
+    if let Some(src_hooks) = src_data.get("hooks").and_then(|h| h.as_object()) {
+        let dest_hooks = data.as_object_mut()
+            .unwrap()
+            .entry("hooks")
+            .or_insert_with(|| serde_json::json!({}));
+
+        for (event, entries) in src_hooks {
+            if let Some(arr) = entries.as_array() {
+                let new_entries: Vec<serde_json::Value> = arr.iter().map(|entry| {
+                    if let Some(hooks_arr) = entry.get("hooks").and_then(|h| h.as_array()) {
+                        let new_hooks: Vec<serde_json::Value> = hooks_arr.iter().map(|h| {
+                            if let Some(cmd) = h.get("command").and_then(|c| c.as_str()) {
+                                let mut h2 = h.clone();
+                                h2["command"] = serde_json::Value::String(
+                                    rewrite_cmd_binary(cmd, &binary)
+                                );
+                                h2
+                            } else {
+                                h.clone()
+                            }
+                        }).collect();
+                        serde_json::json!({"hooks": new_hooks})
+                    } else {
+                        entry.clone()
+                    }
+                }).collect();
+                dest_hooks[event] = serde_json::Value::Array(new_entries);
+            }
+        }
+    } else {
+        eprintln!("copy-hooks: no hooks section found in {}", from.display());
+        return 1;
+    }
+
+    if let Some(parent) = settings.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    match serde_json::to_string_pretty(&data) {
+        Ok(out) => match fs::write(&settings, out) {
+            Ok(_)  => { eprintln!("Hooks copied to {}", settings.display()); 0 }
+            Err(e) => { eprintln!("Error writing {}: {}", settings.display(), e); 1 }
+        },
+        Err(e) => { eprintln!("Error serialising settings: {}", e); 1 }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -1256,6 +1356,9 @@ fn main() {
         }
         "remove-hooks" => {
             process::exit(run_remove_hooks(&args));
+        }
+        "copy-hooks" => {
+            process::exit(run_copy_hooks(&args));
         }
         "debug" => {
             // Dump action + stdin to a log file for inspecting hook payloads

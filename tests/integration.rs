@@ -161,3 +161,94 @@ fn stop_escalation_for_question() {
     env.run_with_stdin(&["stop", "--delay", "2", "--cooldown", "0"], payload);
     assert!(env.wait_for_esc(700), "escalation sentinel should appear for question message");
 }
+
+// ---------------------------------------------------------------------------
+// Hook management subcommands
+// ---------------------------------------------------------------------------
+
+fn run_bin(args: &[&str]) -> std::process::Output {
+    Command::new(BIN).args(args).output().unwrap()
+}
+
+#[test]
+fn install_hooks_writes_all_five_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.json");
+    fs::write(&settings, "{}").unwrap();
+
+    let out = run_bin(&[
+        "install-hooks",
+        "--settings", settings.to_str().unwrap(),
+        "--binary", "/usr/local/bin/meatbag-nudge",
+        "--stop", "\"/usr/local/bin/meatbag-nudge\" stop --delay 300",
+        "--permission", "\"/usr/local/bin/meatbag-nudge\" permission --delay 30",
+    ]);
+    assert!(out.status.success(), "install-hooks should exit 0");
+
+    let content = fs::read_to_string(&settings).unwrap();
+    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let hooks = data["hooks"].as_object().unwrap();
+    assert!(hooks.contains_key("Stop"), "Stop hook missing");
+    assert!(hooks.contains_key("PermissionRequest"), "PermissionRequest hook missing");
+    assert!(hooks.contains_key("PostToolUse"), "PostToolUse hook missing");
+    assert!(hooks.contains_key("PostToolUseFailure"), "PostToolUseFailure hook missing");
+    assert!(hooks.contains_key("UserPromptSubmit"), "UserPromptSubmit hook missing");
+}
+
+#[test]
+fn remove_hooks_strips_meatbag_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.json");
+    // Pre-populate with a hook and an unrelated key
+    fs::write(&settings, r#"{
+        "someOtherKey": true,
+        "hooks": {
+            "Stop": [{"hooks": [{"type": "command", "command": "\"meatbag-nudge\" stop"}]}],
+            "PostToolUse": [{"hooks": [{"type": "command", "command": "\"meatbag-nudge\" cancel"}]}]
+        }
+    }"#).unwrap();
+
+    let out = run_bin(&["remove-hooks", "--settings", settings.to_str().unwrap()]);
+    assert!(out.status.success());
+
+    let content = fs::read_to_string(&settings).unwrap();
+    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert!(data["hooks"].as_object().unwrap().is_empty(), "hooks should be empty after remove");
+    assert_eq!(data["someOtherKey"], serde_json::Value::Bool(true), "unrelated keys should be preserved");
+}
+
+#[test]
+fn copy_hooks_rewrites_binary_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("win_settings.json");
+    let dst = dir.path().join("wsl_settings.json");
+
+    fs::write(&src, r#"{
+        "hooks": {
+            "Stop": [{"hooks": [{"type": "command", "command": "\"C:\\old\\meatbag-nudge.exe\" stop --delay 300 --cooldown 5"}]}],
+            "PostToolUse": [{"hooks": [{"type": "command", "command": "\"C:\\old\\meatbag-nudge.exe\" cancel"}]}],
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "\"C:\\old\\meatbag-nudge.exe\" prompt"}]}]
+        }
+    }"#).unwrap();
+    fs::write(&dst, "{}").unwrap();
+
+    let new_bin = "/mnt/c/Users/user/.local/bin/meatbag-nudge.exe";
+    let out = run_bin(&[
+        "copy-hooks",
+        "--from", src.to_str().unwrap(),
+        "--binary", new_bin,
+        "--settings", dst.to_str().unwrap(),
+        "--overwrite",
+    ]);
+    assert!(out.status.success(), "copy-hooks should exit 0: {:?}", String::from_utf8_lossy(&out.stderr));
+
+    let content = fs::read_to_string(&dst).unwrap();
+    let data: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let stop_cmd = data["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+    assert!(stop_cmd.starts_with(&format!("\"{}\"", new_bin)), "binary path not rewritten: {}", stop_cmd);
+    assert!(stop_cmd.contains("stop --delay 300 --cooldown 5"), "flags should be preserved: {}", stop_cmd);
+
+    let cancel_cmd = data["hooks"]["PostToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
+    assert!(cancel_cmd.starts_with(&format!("\"{}\"", new_bin)), "binary path not rewritten in cancel: {}", cancel_cmd);
+    assert!(cancel_cmd.contains("cancel"), "subcommand should be preserved");
+}

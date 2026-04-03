@@ -70,7 +70,27 @@ EOF
     fi
 
     if ! $NO_HOOKS; then
-        configure_hooks "$win_binary"
+        # If the Windows settings.json already has meatbag-nudge hooks, offer to
+        # copy them (substituting the binary path) rather than re-asking everything.
+        local win_home
+        win_home=$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r\n')" 2>/dev/null) || true
+        local win_settings="$win_home/.claude/settings.json"
+
+        if [ -f "$win_settings" ] && grep -q "meatbag-nudge" "$win_settings" 2>/dev/null; then
+            echo ""
+            read -rp "  Copy hook settings from Windows install? [Y/n]: " copy_choice </dev/tty
+            if [[ ! "$copy_choice" =~ ^[Nn] ]]; then
+                "$win_binary" copy-hooks \
+                    --from "$(wslpath -w "$win_settings")" \
+                    --binary "$win_binary" \
+                    --settings "$(wslpath -w "$SETTINGS_FILE")" \
+                    --overwrite
+            else
+                configure_hooks "$win_binary"
+            fi
+        else
+            configure_hooks "$win_binary"
+        fi
     fi
 
     echo ""
