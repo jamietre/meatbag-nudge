@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-03
+
+### Added
+- **macOS support** — `afplay` used as audio player (built-in, no install needed); macOS system sounds (`/System/Library/Sounds/`) used as defaults; macOS arm64 and x86_64 release binaries added to GitHub Actions workflow
+- **Install directory prompt** — installer now asks where to install the binary, defaulting to `/usr/local/bin` on macOS (if writable) or `~/.local/bin` on Linux/Windows; skipped with `--dir` or `--defaults`
+
+### Fixed
+- **`detect_audio_player: command not found`** — function was called in `install.sh` but never defined
+
 ## [0.3.0] - 2026-04-03
 
 ### Added
@@ -43,7 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Custom notification/escalation command support via `MEATBAG_NOTIFICATION_CMD` / `MEATBAG_ESCALATION_CMD`
 - `install.sh` — builds, installs binary + sounds, and auto-configures Claude Code hooks
 
-[Unreleased]: https://github.com/jamietre/meatbag-nudge/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jamietre/meatbag-nudge/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jamietre/meatbag-nudge/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jamietre/meatbag-nudge/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jamietre/meatbag-nudge/compare/v0.0.0...v0.2.0
 [0.1.0]: https://github.com/jamietre/meatbag-nudge/releases/tag/v0.1.0
