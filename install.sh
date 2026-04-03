@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALL_DIR="${HOME}/.local/bin"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
 BINARY_NAME="meatbag-nudge"
 REPO="jamietre/meatbag-nudge"
@@ -9,8 +8,25 @@ REPO="jamietre/meatbag-nudge"
 # Detect platform
 case "$(uname -s)" in
     MSYS*|MINGW*|CYGWIN*) EXE_EXT=".exe"; PLATFORM="windows" ;;
+    Darwin*)               EXE_EXT="";     PLATFORM="macos"   ;;
     *)                     EXE_EXT="";     PLATFORM="linux"   ;;
 esac
+
+# Default install dir — overridable by --dir or interactive prompt
+default_install_dir() {
+    if [ "$PLATFORM" = "macos" ]; then
+        if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
+            echo "/usr/local/bin"
+        else
+            echo "${HOME}/.local/bin"
+        fi
+    else
+        echo "${HOME}/.local/bin"
+    fi
+}
+
+INSTALL_DIR="$(default_install_dir)"
+INSTALL_DIR_EXPLICIT=false
 
 is_wsl() {
     # WSL_DISTRO_NAME is set by WSL itself and works even with custom kernels
@@ -116,6 +132,19 @@ prompt_value() {
     local value
     read -rp "  $label [$default]: " value </dev/tty
     printf -v "$varname" '%s' "${value:-$default}"
+}
+
+detect_audio_player() {
+    case "$PLATFORM" in
+        macos)
+            command -v afplay &>/dev/null && echo "afplay" && return ;;
+        windows) ;;
+        *)
+            command -v paplay  &>/dev/null && echo "paplay"  && return
+            command -v pw-play &>/dev/null && echo "pw-play" && return
+            command -v aplay   &>/dev/null && echo "aplay"   && return ;;
+    esac
+    echo ""
 }
 
 configure_hooks() {
@@ -251,6 +280,27 @@ detect_default_sound() {
         done
     fi
 
+    # macOS system sounds
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        local mac_candidates=()
+        if [ "$kind" = "escalation" ]; then
+            mac_candidates=(
+                "/System/Library/Sounds/Glass.aiff"
+                "/System/Library/Sounds/Funk.aiff"
+                "/System/Library/Sounds/Basso.aiff"
+            )
+        else
+            mac_candidates=(
+                "/System/Library/Sounds/Ping.aiff"
+                "/System/Library/Sounds/Tink.aiff"
+                "/System/Library/Sounds/Pop.aiff"
+            )
+        fi
+        for f in "${mac_candidates[@]}"; do
+            [ -f "$f" ] && echo "$f" && return
+        done
+    fi
+
     # Linux system sounds
     local linux_candidates=()
     if [ "$kind" = "escalation" ]; then
@@ -370,6 +420,9 @@ download_release() {
     local asset_name
     if [ "$PLATFORM" = "windows" ]; then
         asset_name="meatbag-nudge-windows-x86_64.zip"
+    elif [ "$PLATFORM" = "macos" ]; then
+        local arch; arch="$(uname -m)"  # arm64 or x86_64
+        asset_name="meatbag-nudge-macos-${arch}.tar.gz"
     else
         asset_name="meatbag-nudge-linux-x86_64.tar.gz"
     fi
@@ -410,7 +463,7 @@ UNINSTALL=false
 BUILD=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dir)       INSTALL_DIR="$2"; shift 2 ;;
+        --dir)       INSTALL_DIR="$2"; INSTALL_DIR_EXPLICIT=true; shift 2 ;;
         --no-hooks)  NO_HOOKS=true; shift ;;
         --defaults)  USE_DEFAULTS=true; shift ;;
         --build)     BUILD=true; shift ;;
@@ -419,6 +472,15 @@ while [[ $# -gt 0 ]]; do
         *)           echo "Unknown option: $1"; usage; exit 1 ;;
     esac
 done
+
+# Prompt for install dir unless explicitly set or using defaults / WSL / uninstall
+if ! $INSTALL_DIR_EXPLICIT && ! $USE_DEFAULTS && ! is_wsl && ! $UNINSTALL; then
+    echo ""
+    read -rp "Install directory [$INSTALL_DIR]: " dir_input </dev/tty
+    if [ -n "$dir_input" ]; then
+        INSTALL_DIR="$dir_input"
+    fi
+fi
 
 BINARY="${INSTALL_DIR}/${BINARY_NAME}${EXE_EXT}"
 
@@ -445,7 +507,7 @@ cat <<'BANNER'
 
   This installer will:
     1. Download the latest release binary from GitHub (or build from source with --build)
-    2. Copy the binary to ~/.local/bin/
+    2. Copy the binary to your chosen install directory (default: $(default_install_dir))
     3. Add notification hooks to ~/.claude/settings.json
 
 BANNER
