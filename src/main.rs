@@ -520,7 +520,28 @@ fn system_sound(kind: &str) -> String {
             }
         }
     }
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
+    {
+        let candidates: &[&str] = if kind == "escalation" {
+            &[
+                "/System/Library/Sounds/Glass.aiff",
+                "/System/Library/Sounds/Funk.aiff",
+                "/System/Library/Sounds/Basso.aiff",
+            ]
+        } else {
+            &[
+                "/System/Library/Sounds/Ping.aiff",
+                "/System/Library/Sounds/Tink.aiff",
+                "/System/Library/Sounds/Pop.aiff",
+            ]
+        };
+        for path in candidates {
+            if std::path::Path::new(path).exists() {
+                return path.to_string();
+            }
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         // WAV first (works with aplay, paplay, pw-play), then OGG (paplay/pw-play only)
         let candidates: &[&str] = if kind == "escalation" {
@@ -658,7 +679,11 @@ fn kill_process(pid: u32) {
 fn detect_audio_player() -> &'static str {
     static PLAYER: OnceLock<&'static str> = OnceLock::new();
     PLAYER.get_or_init(|| {
-        for player in &["paplay", "aplay", "pw-play"] {
+        #[cfg(target_os = "macos")]
+        let candidates: &[&str] = &["afplay"];
+        #[cfg(not(target_os = "macos"))]
+        let candidates: &[&str] = &["paplay", "aplay", "pw-play"];
+        for player in candidates {
             if Command::new("which")
                 .arg(player)
                 .stdin(Stdio::null())
@@ -671,7 +696,10 @@ fn detect_audio_player() -> &'static str {
                 return player;
             }
         }
-        "paplay" // last-resort default
+        #[cfg(target_os = "macos")]
+        { "afplay" }
+        #[cfg(not(target_os = "macos"))]
+        { "paplay" } // last-resort default
     })
 }
 
