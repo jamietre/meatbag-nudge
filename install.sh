@@ -364,6 +364,67 @@ remove_hooks() {
     "$binary" remove-hooks
 }
 
+install_bundle_macos() {
+    local binary_src="$1"
+    local bundle_dir="${HOME}/Applications/${BINARY_NAME}.app"
+    local contents="${bundle_dir}/Contents"
+    local macos_dir="${contents}/MacOS"
+
+    echo "Creating .app bundle: ${bundle_dir}"
+    mkdir -p "${macos_dir}"
+
+    cat > "${contents}/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>  <string>org.est.mostly-water-notifier</string>
+  <key>CFBundleName</key>        <string>${BINARY_NAME}</string>
+  <key>CFBundleDisplayName</key> <string>Mostly Water Notifier</string>
+  <key>CFBundleVersion</key>     <string>1.0</string>
+  <key>CFBundlePackageType</key> <string>APPL</string>
+  <key>NSPrincipalClass</key>    <string>NSApplication</string>
+  <key>LSUIElement</key>         <true/>
+</dict>
+</plist>
+PLIST
+
+    local bundle_binary="${macos_dir}/${BINARY_NAME}"
+    cp "${binary_src}" "${bundle_binary}"
+    chmod +x "${bundle_binary}"
+
+    # Sign the bundle. Developer ID signing is required on macOS 15+ (Sequoia) for
+    # UNUserNotificationCenter authorization prompts to appear. Ad-hoc signing causes
+    # automatic denial. Try to find a Developer ID Application certificate.
+    if command -v codesign &>/dev/null; then
+        local dev_id
+        dev_id=$(security find-identity -v -p codesigning 2>/dev/null \
+            | grep "Developer ID Application" \
+            | head -1 \
+            | sed 's/.*"\(Developer ID Application:[^"]*\)".*/\1/')
+
+        if [ -n "$dev_id" ]; then
+            echo "Signing bundle with: $dev_id"
+            codesign --force --deep --sign "$dev_id" "${bundle_dir}" 2>/dev/null || true
+        else
+            echo "Signing bundle (ad-hoc — no Developer ID certificate found)..."
+            echo "NOTE: On macOS 15+ (Sequoia), notification permission prompts may not appear"
+            echo "      with ad-hoc signing. If notifications don't work, sign with a Developer ID:"
+            echo "        codesign --force --deep --sign \"Developer ID Application: Your Name\" \\"
+            echo "            ${bundle_dir}"
+            codesign --force --deep --sign - "${bundle_dir}" 2>/dev/null || true
+        fi
+    fi
+
+    # Point the user's binary location at the bundle binary
+    mkdir -p "${INSTALL_DIR}"
+    ln -sf "${bundle_binary}" "${BINARY}"
+
+    echo "Installed: ${bundle_binary}"
+    echo "Linked:    ${BINARY} → ${bundle_binary}"
+}
+
 build_from_source() {
     local script_dir
     script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -523,6 +584,13 @@ if $UNINSTALL; then
     echo "Uninstalling meatbag-nudge..."
     remove_hooks "$BINARY"
     rm -f "$BINARY"
+    if [ "$PLATFORM" = "macos" ]; then
+        bundle_dir="${HOME}/Applications/${BINARY_NAME}.app"
+        if [ -d "$bundle_dir" ]; then
+            rm -rf "$bundle_dir"
+            echo "Removed bundle: $bundle_dir"
+        fi
+    fi
     echo "Done."
     exit 0
 fi
@@ -535,16 +603,19 @@ else
 fi
 
 # Install binary
-echo "Installing to $INSTALL_DIR..."
-mkdir -p "$INSTALL_DIR"
-if [ -f "$BINARY" ]; then
-    mv "$BINARY" "${BINARY}.old" 2>/dev/null || true
+if [ "$PLATFORM" = "macos" ]; then
+    install_bundle_macos "$binary_path"
+else
+    echo "Installing to $INSTALL_DIR..."
+    mkdir -p "$INSTALL_DIR"
+    if [ -f "$BINARY" ]; then
+        mv "$BINARY" "${BINARY}.old" 2>/dev/null || true
+    fi
+    cp "$binary_path" "$BINARY"
+    chmod +x "$BINARY"
+    rm -f "${BINARY}.old"
+    echo "Installed: $BINARY"
 fi
-cp "$binary_path" "$BINARY"
-chmod +x "$BINARY"
-rm -f "${BINARY}.old"
-
-echo "Installed: $BINARY"
 
 # Verify on PATH
 if ! command -v "$BINARY_NAME" &>/dev/null; then
@@ -557,6 +628,14 @@ fi
 # Configure hooks
 if ! $NO_HOOKS; then
     configure_hooks "$BINARY"
+fi
+
+# On macOS, trigger a test notification to prompt for notification permission
+if [ "$PLATFORM" = "macos" ]; then
+    echo ""
+    echo "Requesting notification permission..."
+    echo "(macOS may show a dialog asking to allow notifications — click Allow)"
+    "$BINARY" _notify "Claude Notify" "Notifications are working!" 2>/dev/null || true
 fi
 
 echo ""
