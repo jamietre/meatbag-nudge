@@ -880,6 +880,7 @@ mod macos_notify {
 
         #[link_name = "objc_msgSend"] fn msg0    (r: Id, s: Sel                     ) -> Id;
         #[link_name = "objc_msgSend"] fn msg1v   (r: Id, s: Sel, a: Id              );
+        #[link_name = "objc_msgSend"] fn msg1id  (r: Id, s: Sel, a: Id              ) -> Id;
         #[link_name = "objc_msgSend"] fn msg1n   (r: Id, s: Sel, a: usize           ) -> Id;
         #[link_name = "objc_msgSend"] fn msg1cstr(r: Id, s: Sel, a: *const u8       ) -> Id;
         #[link_name = "objc_msgSend"] fn msg1f   (r: Id, s: Sel, a: f64              ) -> Id;
@@ -1158,14 +1159,29 @@ mod macos_notify {
             }
 
             // --- Phase 2: post the notification ---
+
+            // Remove any existing notification for this project first.  If we simply
+            // post with the same identifier macOS treats it as a "replacement" and
+            // plays a system ding regardless of the notification's own sound setting
+            // or System Settings > Notifications > Play Sound.  Removing silently
+            // first, then posting fresh, avoids the replacement sound.
+            let proj_id  = format!("meatbag-nudge.{}", title);
+            let id_str   = nsstring(&proj_id);
+            let id_array = msg1id(cls(b"NSArray\0"), sel(b"arrayWithObject:\0"), id_str);
+            msg1v(center, sel(b"removeDeliveredNotificationsWithIdentifiers:\0"), id_array);
+            // Brief spin so the removal XPC round-trip completes before we post.
+            let rm_tick = msg1f(cls(b"NSDate\0"),
+                                sel(b"dateWithTimeIntervalSinceNow:\0"), 0.05);
+            msg1v(run_loop, sel(b"runUntilDate:\0"), rm_tick);
+
             let content = msg0(cls(b"UNMutableNotificationContent\0"), sel(b"new\0"));
             msg1v(content, sel(b"setTitle:\0"), nsstring(title));
             msg1v(content, sel(b"setBody:\0"),  nsstring(body));
-            let sound = msg0(cls(b"UNNotificationSound\0"), sel(b"defaultSound\0"));
-            msg1v(content, sel(b"setSound:\0"), sound);
+            // threadIdentifier groups notifications by project in Notification Center.
+            msg1v(content, sel(b"setThreadIdentifier:\0"), nsstring(title));
+            // No notification sound — afplay already handles audio in the main process.
 
-            let uuid  = msg0(cls(b"NSUUID\0"), sel(b"UUID\0"));
-            let ident = msg0(uuid, sel(b"UUIDString\0"));
+            let ident = nsstring(&proj_id);
             let request = msg3(
                 cls(b"UNNotificationRequest\0"),
                 sel(b"requestWithIdentifier:content:trigger:\0"),
@@ -1197,6 +1213,33 @@ fn find_app_bundle(exe: &std::path::Path) -> Option<std::path::PathBuf> {
     }
 }
 
+/// Detect a running IDE and bring it to the foreground at `path`.
+/// Tries Cursor, VS Code, Windsurf, and Zed in order.
+#[cfg(target_os = "macos")]
+fn focus_ide_at(path: &str) {
+    // (pgrep process name, `open -a` app name)
+    let candidates = [
+        ("Cursor",   "Cursor"),
+        ("Code",     "Visual Studio Code"),
+        ("Windsurf", "Windsurf"),
+        ("zed",      "Zed"),
+    ];
+    for (proc_name, app_name) in &candidates {
+        let running = Command::new("pgrep")
+            .args(["-x", proc_name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if running {
+            let _ = Command::new("open")
+                .args(["-a", app_name, path])
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+                .spawn();
+            return;
+        }
+    }
+}
+
 /// Send a macOS Notification Center banner.
 ///
 /// Launches the bundle via `open -a` (LaunchServices) so macOS registers
@@ -1206,6 +1249,16 @@ fn find_app_bundle(exe: &std::path::Path) -> Option<std::path::PathBuf> {
 /// Falls back to `osascript` for development / non-bundle runs.
 #[cfg(target_os = "macos")]
 fn send_macos_notification(title: &str, body: &str) {
+    // Record the project path so a notification click can focus the right IDE window.
+    {
+        let cwd = env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let dir = state_dir();
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(PathBuf::from(&dir).join("last-notified-path"), &cwd);
+    }
+
     let exe = std::env::current_exe()
         .and_then(|p| fs::canonicalize(p))
         .unwrap_or_default();
@@ -1398,7 +1451,7 @@ fn run_escalation(delay_secs: u64) {
     {
         let proj = project_name();
         send_macos_notification(&proj,
-            &format!("{} needs your attention. -Claude", proj));
+            &format!("{} still needs your attention. -Claude", proj));
     }
 
     let sound_repeat: u32 = env::var("MEATBAG_ESCALATION_REPEAT")
@@ -1838,6 +1891,26 @@ fn main() {
             eprintln!("Logged to {}", log.display());
         }
         _ => {
+            // When macOS opens our .app bundle because the user clicked a notification
+            // banner, the binary runs with no arguments.  Detect this case (no args +
+            // inside a .app bundle) and focus the IDE for the last notified project.
+            #[cfg(target_os = "macos")]
+            if action.is_empty() {
+                let exe = env::current_exe()
+                    .and_then(|p| fs::canonicalize(p))
+                    .unwrap_or_default();
+                if find_app_bundle(&exe).is_some() {
+                    let path_file = PathBuf::from(state_dir()).join("last-notified-path");
+                    if let Ok(path) = fs::read_to_string(&path_file) {
+                        let path = path.trim();
+                        if !path.is_empty() {
+                            focus_ide_at(path);
+                            return;
+                        }
+                    }
+                }
+            }
+
             eprintln!("Usage: meatbag-nudge <action> [options]");
             eprintln!();
             eprintln!("Actions:");
