@@ -603,7 +603,24 @@ else
 fi
 
 # Install binary
+INSTALL_MACOS_BUNDLE=false
 if [ "$PLATFORM" = "macos" ]; then
+    if $USE_DEFAULTS; then
+        INSTALL_MACOS_BUNDLE=true
+    else
+        echo ""
+        echo "Native macOS notification banners require a .app bundle so meatbag-nudge"
+        echo "appears in System Settings → Notifications. This also requires a Developer ID"
+        echo "certificate for the permission dialog to appear on macOS 15+."
+        echo ""
+        read -rp "  Install native macOS notification banners? [Y/n]: " notif_choice </dev/tty
+        if [[ ! "$notif_choice" =~ ^[Nn] ]]; then
+            INSTALL_MACOS_BUNDLE=true
+        fi
+    fi
+fi
+
+if $INSTALL_MACOS_BUNDLE; then
     install_bundle_macos "$binary_path"
 else
     echo "Installing to $INSTALL_DIR..."
@@ -630,8 +647,8 @@ if ! $NO_HOOKS; then
     configure_hooks "$BINARY"
 fi
 
-# On macOS, trigger a test notification to prompt for notification permission
-if [ "$PLATFORM" = "macos" ]; then
+# On macOS with bundle installed, trigger a test notification to request permission
+if $INSTALL_MACOS_BUNDLE; then
     echo ""
     echo "Requesting notification permission..."
     echo "(macOS may show a dialog asking to allow notifications — click Allow)"

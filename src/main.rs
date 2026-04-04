@@ -583,6 +583,18 @@ fn tick_sleep(secs: u64) {
     std::thread::sleep(Duration::from_millis(secs * ms));
 }
 
+/// Returns the project name for notification messages.
+/// Precedence: MEATBAG_PROJECT env var → basename of current working directory → "Claude".
+fn project_name() -> String {
+    env::var("MEATBAG_PROJECT").ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            env::current_dir().ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        })
+        .unwrap_or_else(|| "Claude".to_string())
+}
+
 fn state_dir() -> String {
     env::var("MEATBAG_STATE_DIR").unwrap_or_else(|_| {
         #[cfg(unix)]
@@ -1383,7 +1395,11 @@ fn run_escalation(delay_secs: u64) {
         win32::flash_screen(flash_count);
     }
     #[cfg(target_os = "macos")]
-    send_macos_notification("Claude Code — Still Waiting", "Claude has been waiting for your response");
+    {
+        let proj = project_name();
+        send_macos_notification(&proj,
+            &format!("{} needs your attention. -Claude", proj));
+    }
 
     let sound_repeat: u32 = env::var("MEATBAG_ESCALATION_REPEAT")
         .ok()
@@ -1714,6 +1730,9 @@ fn main() {
     if let Some(v) = parse_flag(&args, "--focus-cmd") {
         env::set_var("MEATBAG_FOCUS_CMD", &v);
     }
+    if let Some(v) = parse_flag(&args, "--project") {
+        env::set_var("MEATBAG_PROJECT", &v);
+    }
 
     let dir = state_dir();
     let _ = fs::create_dir_all(&dir);
@@ -1763,9 +1782,13 @@ fn main() {
             }
             #[cfg(target_os = "macos")]
             {
-                let body = if is_question { "Claude is waiting for your response" }
-                           else           { "Claude has finished" };
-                send_macos_notification("Claude Code", body);
+                let proj = project_name();
+                let body = if is_question {
+                    format!("{} needs your attention. -Claude", proj)
+                } else {
+                    format!("{} is ready. -Claude", proj)
+                };
+                send_macos_notification(&proj, &body);
             }
         }
         "permission" => {
@@ -1774,7 +1797,11 @@ fn main() {
             play_sound(&dir, cooldown);
             start_escalation(&dir, permission_delay);
             #[cfg(target_os = "macos")]
-            send_macos_notification("Claude Code", "Claude needs permission to continue");
+            {
+                let proj = project_name();
+                send_macos_notification(&proj,
+                    &format!("{} needs your attention. -Claude", proj));
+            }
         }
         "prompt" => handle_prompt(&dir),
         "cancel" => cancel_pending(&dir),
