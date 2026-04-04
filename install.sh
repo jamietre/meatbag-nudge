@@ -482,6 +482,9 @@ if ! $INSTALL_DIR_EXPLICIT && ! $USE_DEFAULTS && ! is_wsl && ! $UNINSTALL; then
     fi
 fi
 
+# Expand leading ~ to $HOME (tilde is not expanded inside `read`)
+INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
+
 BINARY="${INSTALL_DIR}/${BINARY_NAME}${EXE_EXT}"
 
 cat <<'BANNER'
