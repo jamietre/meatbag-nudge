@@ -156,10 +156,10 @@ configure_hooks() {
     fi
 
     # Prompt for settings
-    local cooldown stop_delay perm_delay flash_count repeat_count focus_choice
+    local cooldown stop_delay perm_delay flash_count repeat_count focus_choice fun_messages
     if $USE_DEFAULTS; then
         cooldown=30 stop_delay=300 perm_delay=30 flash_count=1 repeat_count=1
-        focus_choice="notification"
+        focus_choice="notification" fun_messages=true
     else
         echo ""
         echo "Configure notification settings (press Enter for defaults):"
@@ -182,6 +182,13 @@ configure_hooks() {
         echo "  Focus the terminal window when a nudge fires?"
         echo "  Options: none, notification, escalation, both"
         prompt_value "Focus on" "notification" focus_choice
+        echo ""
+        read -rp "  Include fun message variants? [Y/n]: " fun_choice </dev/tty
+        if [[ "$fun_choice" =~ ^[Nn] ]]; then
+            fun_messages=false
+        else
+            fun_messages=true
+        fi
     fi
 
     # Normalise focus_choice -> --focus flag
@@ -210,9 +217,14 @@ configure_hooks() {
         fi
     fi
 
+    # Write the settings file so the binary picks it up at runtime without
+    # baking the value into the hook command strings.
     # Build hook commands with CLI flags
-    local stop_cmd="\"$binary\" stop --delay $stop_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}"
-    local perm_cmd="\"$binary\" permission --delay $perm_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}"
+    local fun_flag=""
+    if $fun_messages; then fun_flag=" --fun"; fi
+
+    local stop_cmd="\"$binary\" stop --delay $stop_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}${fun_flag}"
+    local perm_cmd="\"$binary\" permission --delay $perm_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}${fun_flag}"
     local cancel_cmd="\"$binary\" cancel"
     local dismiss_cmd="\"$binary\" dismiss"
     local prompt_cmd="\"$binary\" prompt"
