@@ -640,7 +640,7 @@ fn notification_body(kind: &str) -> String {
                 "Hello? I need help please. -Claude",
                 "I don't know what to do. -Claude",
                 "Can you come look at this? -Claude",
-                "I an important question. -Claude",
+                "I have an important question. -Claude",
                 "Excuse me... -Claude",
                 "HELP. -Claude",
                 "I've fallen, and I can't get up. -Claude",
