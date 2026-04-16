@@ -437,6 +437,72 @@ PLIST
     echo "Linked:    ${BINARY} → ${bundle_binary}"
 }
 
+install_prebuilt_bundle_macos() {
+    local downloader=""
+    if command -v curl &>/dev/null; then
+        downloader="curl"
+    elif command -v wget &>/dev/null; then
+        downloader="wget"
+    else
+        echo "ERROR: curl or wget is required to download releases." >&2
+        exit 1
+    fi
+
+    local api_url="https://api.github.com/repos/${REPO}/releases/latest"
+    local release_json
+    if [ "$downloader" = "curl" ]; then
+        release_json=$(curl -fsSL "$api_url")
+    else
+        release_json=$(wget -qO- "$api_url")
+    fi
+
+    local tag
+    tag=$(echo "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    if [ -z "$tag" ]; then
+        echo "ERROR: Could not determine latest release tag. Check your internet connection" >&2
+        echo "or visit https://github.com/${REPO}/releases to download manually." >&2
+        exit 1
+    fi
+
+    echo "Latest release: $tag"
+
+    local asset_name="meatbag-nudge-macos-universal-app.tar.gz"
+    local download_url="https://github.com/${REPO}/releases/download/${tag}/${asset_name}"
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local archive="${tmp_dir}/${asset_name}"
+
+    echo "Downloading $asset_name..."
+    if [ "$downloader" = "curl" ]; then
+        curl -fsSL -o "$archive" "$download_url"
+    else
+        wget -qO "$archive" "$download_url"
+    fi
+
+    tar -xzf "$archive" -C "$tmp_dir"
+
+    local app_src="${tmp_dir}/meatbag-nudge.app"
+    if [ ! -d "$app_src" ]; then
+        echo "ERROR: .app bundle not found in archive. Contents:" >&2
+        ls "$tmp_dir" >&2
+        exit 1
+    fi
+
+    local bundle_dir="${HOME}/Applications/${BINARY_NAME}.app"
+    mkdir -p "${HOME}/Applications"
+    rm -rf "$bundle_dir"
+    mv "$app_src" "$bundle_dir"
+
+    local bundle_binary="${bundle_dir}/Contents/MacOS/${BINARY_NAME}"
+    chmod +x "$bundle_binary"
+
+    mkdir -p "${INSTALL_DIR}"
+    ln -sf "${bundle_binary}" "${BINARY}"
+
+    echo "Installed: ${bundle_dir}"
+    echo "Linked:    ${BINARY} → ${bundle_binary}"
+}
+
 build_from_source() {
     local script_dir
     script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -494,8 +560,8 @@ download_release() {
     if [ "$PLATFORM" = "windows" ]; then
         asset_name="meatbag-nudge-windows-x86_64.zip"
     elif [ "$PLATFORM" = "macos" ]; then
-        local arch; arch="$(uname -m)"  # arm64 or x86_64
-        asset_name="meatbag-nudge-macos-${arch}.tar.gz"
+        # The macOS release asset is a universal .app bundle; extract the binary from within it
+        asset_name="meatbag-nudge-macos-universal-app.tar.gz"
     else
         asset_name="meatbag-nudge-linux-x86_64.tar.gz"
     fi
@@ -519,7 +585,14 @@ download_release() {
         unzip -q "$archive" -d "$tmp_dir" >&2
     fi
 
-    local binary="${tmp_dir}/${BINARY_NAME}${EXE_EXT}"
+    # For macOS the archive contains an .app bundle; pull the binary out of it
+    local binary
+    if [ "$PLATFORM" = "macos" ]; then
+        binary="${tmp_dir}/meatbag-nudge.app/Contents/MacOS/${BINARY_NAME}"
+    else
+        binary="${tmp_dir}/${BINARY_NAME}${EXE_EXT}"
+    fi
+
     if [ ! -f "$binary" ]; then
         echo "ERROR: Binary not found in archive. Contents:" >&2
         ls "$tmp_dir" >&2
@@ -607,14 +680,7 @@ if $UNINSTALL; then
     exit 0
 fi
 
-# Get the binary
-if $BUILD; then
-    binary_path=$(build_from_source)
-else
-    binary_path=$(download_release)
-fi
-
-# Install binary
+# For macOS, decide on bundle install before downloading anything
 INSTALL_MACOS_BUNDLE=false
 if [ "$PLATFORM" = "macos" ]; then
     if $USE_DEFAULTS; then
@@ -622,8 +688,8 @@ if [ "$PLATFORM" = "macos" ]; then
     else
         echo ""
         echo "Native macOS notification banners require a .app bundle so meatbag-nudge"
-        echo "appears in System Settings → Notifications. This also requires a Developer ID"
-        echo "certificate for the permission dialog to appear on macOS 15+."
+        echo "appears in System Settings → Notifications. The pre-built release bundle"
+        echo "is signed and notarized so the permission dialog appears on macOS 15+."
         echo ""
         read -rp "  Install native macOS notification banners? [Y/n]: " notif_choice </dev/tty
         if [[ ! "$notif_choice" =~ ^[Nn] ]]; then
@@ -632,9 +698,29 @@ if [ "$PLATFORM" = "macos" ]; then
     fi
 fi
 
-if $INSTALL_MACOS_BUNDLE; then
-    install_bundle_macos "$binary_path"
+# Get and install the binary
+if $BUILD; then
+    # Build from source, then install locally (with local signing)
+    binary_path=$(build_from_source)
+    if $INSTALL_MACOS_BUNDLE; then
+        install_bundle_macos "$binary_path"
+    else
+        echo "Installing to $INSTALL_DIR..."
+        mkdir -p "$INSTALL_DIR"
+        if [ -f "$BINARY" ]; then
+            mv "$BINARY" "${BINARY}.old" 2>/dev/null || true
+        fi
+        cp "$binary_path" "$BINARY"
+        chmod +x "$BINARY"
+        rm -f "${BINARY}.old"
+        echo "Installed: $BINARY"
+    fi
+elif $INSTALL_MACOS_BUNDLE; then
+    # Download the pre-signed universal .app bundle from GitHub releases
+    install_prebuilt_bundle_macos
 else
+    # Download bare binary (or extract from universal app for macOS without bundle)
+    binary_path=$(download_release)
     echo "Installing to $INSTALL_DIR..."
     mkdir -p "$INSTALL_DIR"
     if [ -f "$BINARY" ]; then
