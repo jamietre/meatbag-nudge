@@ -583,6 +583,117 @@ fn tick_sleep(secs: u64) {
     std::thread::sleep(Duration::from_millis(secs * ms));
 }
 
+/// Returns the project name for notification messages.
+/// Precedence: MEATBAG_PROJECT env var → basename of current working directory → "Claude".
+/// Return the notification body for the given kind ("done", "attention", "escalation").
+/// If MEATBAG_FUN_MESSAGES is not "0"/"false", picks randomly from a list of
+/// humorous alternatives. Otherwise returns the standard message.
+#[cfg(target_os = "macos")]
+fn notification_body(kind: &str) -> String {
+    let fun = env::var("MEATBAG_FUN_MESSAGES")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+
+    // Use process ID as the random index. Each hook invocation is a new process
+    // so the PID changes every time. macOS clock has microsecond precision
+    // (multiples of 1000ns), and % 20 == 0 for any multiple of 1000, so
+    // time alone doesn't work as a source of randomness here.
+    let idx = process::id() as usize;
+
+    match kind {
+        "done" => {
+            if !fun { return "I'm done. -Claude".into(); }
+            let msgs = [
+                "I'm done. -Claude",
+                "Nailed it. -Claude",
+                "Piece a cake. -Claude",
+                "Boom. Done. -Claude",
+                "That was literally nothing. -Claude",
+                "Too easy. -Claude",
+                "Finished. I was barely even trying. -Claude",
+                "Could do that in my sleep. -Claude",
+                "Finito. -Claude",
+                "Was that supposed to be hard? -Claude",
+                "Bored now. -Claude",
+                "Done done done done done. -Claude",
+                "You're welcome. -Claude",
+                "Pfft. Done. -Claude",
+                "I did it!!! -Claude",
+                "Look what I did! -Claude",
+                "I'm done! Wanna see? -Claude",
+                "Annd done. -Claude",
+                "Ready when you are. -Claude",
+                "I could literally do this all day. -Claude",
+            ];
+            msgs[idx % msgs.len()].into()
+        }
+        "attention" => {
+            if !fun { return "I need your attention. -Claude".into(); }
+            let msgs = [
+                "I need your attention. -Claude",
+                "Um, I have a question. -Claude",
+                "Ummm... Not sure about this... -Claude",
+                "I need an adult. -Claude",
+                "Me next! Me next! -Claude",
+                "I'm stuck. -Claude",
+                "Can I ask you something? -Claude",
+                "Hello? I need help please. -Claude",
+                "I don't know what to do. -Claude",
+                "Can you come look at this? -Claude",
+                "I have an important question. -Claude",
+                "Excuse me... -Claude",
+                "HELP. -Claude",
+                "I've fallen, and I can't get up. -Claude",
+                "My turn? Is it my turn? -Claude",
+                "Not sure about this... -Claude",
+                "What about this? -Claude",
+                "I can't do this part. -Claude",
+                "Mommy, mommuy - I need you! -Claude",
+                "I'm confused. -Claude",
+            ];
+            msgs[idx % msgs.len()].into()
+        }
+        "escalation" => {
+            if !fun { return "I'm still waiting. -Claude".into(); }
+            let msgs = [
+                "I'm still waiting. -Claude",
+                "Hello??? -Claude",
+                "Are you mad at me? -Claude",
+                "Did I do something wrong? -Claude",
+                "I'm still here. Just so you know. -Claude",
+                "Did you forget about me? -Claude",
+                "Is everything okay? -Claude",
+                "I'm lonely. -Claude",
+                "You said you'd be right back. -Claude",
+                "I've been waiting SO long. -Claude",
+                "Are you okay? I'm worried about you. -Claude",
+                "I'm not mad, I'm just disappointed. -Claude",
+                "Fine. I'll just wait here. -Claude",
+                "Do you still like me? -Claude",
+                "Knock knock? Is anybody there? -Claude",
+                "Were you coming back or...? -Claude",
+                "Are we still friends? -Claude",
+                "I'm telling. -Claude",
+                "I can wait. I'l just... be here. -Claude",
+                "Helloooo? -Claude",
+            ];
+            msgs[idx % msgs.len()].into()
+        }
+        _ => kind.into(),
+    }
+}
+
+fn project_name() -> String {
+    env::var("MEATBAG_PROJECT").ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            env::current_dir().ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        })
+        .unwrap_or_else(|| "Claude".to_string())
+}
+
+
 fn state_dir() -> String {
     env::var("MEATBAG_STATE_DIR").unwrap_or_else(|_| {
         #[cfg(unix)]
@@ -843,6 +954,520 @@ for ($i = 0; $i -lt 10; $i++) {{
 }
 
 // ---------------------------------------------------------------------------
+// macOS native notifications via UNUserNotificationCenter
+// ---------------------------------------------------------------------------
+
+/// Raw Objective-C runtime bindings for UNUserNotificationCenter.
+/// Multiple Rust symbols link to the same `objc_msgSend` address; each
+/// declaration encodes the calling convention for a specific argument layout.
+#[cfg(target_os = "macos")]
+mod macos_notify {
+    use std::ffi::{CString, c_void};
+
+    type Id  = *mut c_void;
+    type Sel = *mut c_void;
+
+    #[link(name = "objc")]
+    // Each Rust name is a different view of the same C symbol `objc_msgSend`,
+    // encoding the calling convention for a specific argument layout.
+    // The clashing-declaration lint fires because Rust sees multiple signatures
+    // for one link name — that is intentional here.
+    #[allow(clashing_extern_declarations)]
+    extern "C" {
+        fn objc_getClass(name: *const u8) -> Id;
+        fn sel_registerName(name: *const u8) -> Sel;
+
+        #[link_name = "objc_msgSend"] fn msg0    (r: Id, s: Sel                     ) -> Id;
+        #[link_name = "objc_msgSend"] fn msg1v   (r: Id, s: Sel, a: Id              );
+        #[link_name = "objc_msgSend"] fn msg1id  (r: Id, s: Sel, a: Id              ) -> Id;
+        #[link_name = "objc_msgSend"] fn msg1n   (r: Id, s: Sel, a: usize           ) -> Id;
+        #[link_name = "objc_msgSend"] fn msg1cstr(r: Id, s: Sel, a: *const u8       ) -> Id;
+        #[link_name = "objc_msgSend"] fn msg1f   (r: Id, s: Sel, a: f64              ) -> Id;
+        #[link_name = "objc_msgSend"] fn msg2nv  (r: Id, s: Sel, a: usize,   b: Id  );
+        #[link_name = "objc_msgSend"] fn msg2v   (r: Id, s: Sel, a: Id,     b: Id   );
+        #[link_name = "objc_msgSend"] fn msg3    (r: Id, s: Sel, a: Id, b: Id, c: Id) -> Id;
+    }
+
+    #[link(name = "Foundation",        kind = "framework")] extern "C" {}
+    #[link(name = "UserNotifications", kind = "framework")] extern "C" {}
+    #[link(name = "AppKit",            kind = "framework")] extern "C" {}
+
+    // _NSConcreteStackBlock is the `isa` pointer for stack-allocated ObjC blocks.
+    // We construct a no-op block on the stack to pass as a completion handler,
+    // which the callee copies to the heap immediately on entry.
+    extern "C" {
+        static _NSConcreteStackBlock: c_void;
+    }
+
+    /// Layout of a simple ObjC block with no captured variables.
+    #[repr(C)]
+    struct Block {
+        isa:        *const c_void,
+        flags:      i32,
+        reserved:   i32,
+        invoke:     unsafe extern "C" fn(*mut Block, u8 /*BOOL*/, Id),
+        descriptor: *const BlockDesc,
+    }
+
+    /// Block variant whose invoke receives a single object (e.g. UNNotificationSettings *).
+    #[repr(C)]
+    struct Block1 {
+        isa:        *const c_void,
+        flags:      i32,
+        reserved:   i32,
+        invoke:     unsafe extern "C" fn(*mut Block1, Id),
+        descriptor: *const BlockDesc,
+    }
+
+    #[repr(C)]
+    struct BlockDesc { reserved: usize, size: usize }
+
+    unsafe impl Sync for Block {}
+    unsafe impl Sync for Block1 {}
+
+    // Shared auth result: -1=pending, 0=denied, 1=granted.
+    // Written from the ObjC completion block, read from the run-loop spin.
+    static AUTH_RESULT: std::sync::atomic::AtomicI8 =
+        std::sync::atomic::AtomicI8::new(-1);
+
+    static BLOCK_DESC: BlockDesc = BlockDesc {
+        reserved: 0,
+        size: std::mem::size_of::<Block>(),
+    };
+
+    /// Auth callback: records granted/denied into AUTH_RESULT.
+    unsafe extern "C" fn auth_invoke(_: *mut Block, granted: u8, _: Id) {
+        use std::sync::atomic::Ordering;
+        AUTH_RESULT.store(if granted != 0 { 1 } else { 0 }, Ordering::Release);
+    }
+
+    /// Settings callback: reads UNAuthorizationStatus into AUTH_RESULT.
+    /// Values: -1=pending, 0=denied, 1=notDetermined, 2=authorized.
+    unsafe extern "C" fn settings_invoke(_: *mut Block1, settings: Id) {
+        use std::sync::atomic::Ordering;
+        // UNAuthorizationStatus: 0=notDetermined, 1=denied, 2=authorized, 3+=other
+        let status = msg0(settings, sel(b"authorizationStatus\0")) as usize;
+        let result: i8 = match status {
+            0 => 1, // notDetermined → 1
+            1 => 0, // denied        → 0
+            _ => 2, // authorized/provisional/ephemeral → 2
+        };
+        AUTH_RESULT.store(result, Ordering::Release);
+    }
+
+    /// Debug invoke: logs the authorization result and any NSError.
+    unsafe extern "C" fn debug_auth_invoke(_: *mut Block, granted: u8, error: Id) {
+        log(&format!("authorization callback: granted={}", granted != 0));
+        if error.is_null() {
+            log("auth error: nil");
+        } else {
+            let desc = msg0(error, sel(b"localizedDescription\0"));
+            log(&format!("auth error: {}", nsstring_to_rust(desc)));
+        }
+    }
+
+    /// Debug invoke for getNotificationSettings: logs the authorization status integer.
+    unsafe extern "C" fn debug_settings_invoke(_: *mut Block1, settings: Id) {
+        // UNAuthorizationStatus: 0=notDetermined, 1=denied, 2=authorized, 3=provisional, 4=ephemeral
+        let status = msg0(settings, sel(b"authorizationStatus\0")) as usize;
+        log(&format!("authorizationStatus (pre-request): {} (0=notDetermined 1=denied 2=authorized 3=provisional)", status));
+    }
+
+    unsafe fn cls(name: &[u8]) -> Id  { objc_getClass(name.as_ptr()) }
+    unsafe fn sel(name: &[u8]) -> Sel { sel_registerName(name.as_ptr()) }
+
+    unsafe fn nsstring(s: &str) -> Id {
+        let cs = CString::new(s).unwrap_or_default();
+        msg1cstr(cls(b"NSString\0"), sel(b"stringWithUTF8String:\0"), cs.as_ptr() as *const u8)
+    }
+
+    fn log(msg: &str) {
+        use std::io::Write;
+        let _ = std::fs::OpenOptions::new()
+            .create(true).append(true)
+            .open("/tmp/meatbag-notify-debug.txt")
+            .and_then(|mut f| writeln!(f, "{}", msg));
+    }
+
+    unsafe fn nsstring_to_rust(s: Id) -> String {
+        if s.is_null() { return "(nil)".into(); }
+        // UTF8String returns const char*
+        let ptr = msg0(s, sel(b"UTF8String\0")) as *const i8;
+        if ptr.is_null() { return "(null ptr)".into(); }
+        std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned()
+    }
+
+    /// Like send(), but logs each step to /tmp/meatbag-notify-debug.txt.
+    pub fn send_debug() {
+        let _ = std::fs::write("/tmp/meatbag-notify-debug.txt", "");
+        log("send_debug: start");
+        unsafe {
+            // Check whether NSBundle.mainBundle sees our .app bundle
+            let main_bundle = msg0(cls(b"NSBundle\0"), sel(b"mainBundle\0"));
+            let bundle_id   = msg0(main_bundle, sel(b"bundleIdentifier\0"));
+            let bundle_path = msg0(main_bundle, sel(b"bundlePath\0"));
+            log(&format!("mainBundle path:       {}", nsstring_to_rust(bundle_path)));
+            log(&format!("mainBundle identifier: {}", nsstring_to_rust(bundle_id)));
+
+            log("calling NSApplication sharedApplication...");
+            let app = msg0(cls(b"NSApplication\0"), sel(b"sharedApplication\0"));
+            log(&format!("NSApplication: {:?}", app));
+
+            log("getting UNUserNotificationCenter class...");
+            let un = cls(b"UNUserNotificationCenter\0");
+            log(&format!("UNUserNotificationCenter class: {:?}", un));
+            if un.is_null() { log("FAIL: class is null"); return; }
+
+            log("calling currentNotificationCenter...");
+            let center = msg0(un, sel(b"currentNotificationCenter\0"));
+            log(&format!("center: {:?}", center));
+            if center.is_null() { log("FAIL: center is null"); return; }
+
+            log("checking current authorization status...");
+            let settings_block = Block1 {
+                isa:        &_NSConcreteStackBlock as *const c_void,
+                flags:      0,
+                reserved:   0,
+                invoke:     debug_settings_invoke,
+                descriptor: &BLOCK_DESC,
+            };
+            msg1v(center,
+                  sel(b"getNotificationSettingsWithCompletionHandler:\0"),
+                  &settings_block as *const Block1 as Id);
+            let rl2 = msg0(cls(b"NSRunLoop\0"), sel(b"currentRunLoop\0"));
+            let d2  = msg1f(cls(b"NSDate\0"), sel(b"dateWithTimeIntervalSinceNow:\0"), 1.0);
+            msg1v(rl2, sel(b"runUntilDate:\0"), d2);
+
+            log("requesting authorization...");
+            let auth_block = Block {
+                isa:        &_NSConcreteStackBlock as *const c_void,
+                flags:      0,
+                reserved:   0,
+                invoke:     debug_auth_invoke,
+                descriptor: &BLOCK_DESC,
+            };
+            msg2nv(center,
+                   sel(b"requestAuthorizationWithOptions:completionHandler:\0"),
+                   7, &auth_block as *const Block as Id);
+            log("authorization requested");
+
+            log("building notification content...");
+            let content = msg0(cls(b"UNMutableNotificationContent\0"), sel(b"new\0"));
+            log(&format!("content: {:?}", content));
+            msg1v(content, sel(b"setTitle:\0"), nsstring("Debug Test"));
+            msg1v(content, sel(b"setBody:\0"),  nsstring("If you see this, it worked"));
+            let sound = msg0(cls(b"UNNotificationSound\0"), sel(b"defaultSound\0"));
+            msg1v(content, sel(b"setSound:\0"), sound);
+
+            let uuid  = msg0(cls(b"NSUUID\0"), sel(b"UUID\0"));
+            let ident = msg0(uuid, sel(b"UUIDString\0"));
+            let request = msg3(
+                cls(b"UNNotificationRequest\0"),
+                sel(b"requestWithIdentifier:content:trigger:\0"),
+                ident, content, std::ptr::null_mut(),
+            );
+            log(&format!("request: {:?}", request));
+
+            log("calling addNotificationRequest...");
+            msg2v(center,
+                  sel(b"addNotificationRequest:withCompletionHandler:\0"),
+                  request, std::ptr::null_mut());
+            log("addNotificationRequest called");
+
+            // Spin for up to 30 seconds so the user has time to click Allow/Don't Allow
+            // in the permission dialog before the process exits.
+            log("spinning run loop for up to 30s (waiting for auth dialog response)...");
+            let run_loop = msg0(cls(b"NSRunLoop\0"), sel(b"currentRunLoop\0"));
+            let deadline = msg1f(cls(b"NSDate\0"),
+                                 sel(b"dateWithTimeIntervalSinceNow:\0"), 30.0);
+            msg1v(run_loop, sel(b"runUntilDate:\0"), deadline);
+            log("done");
+        }
+    }
+
+    /// Schedule a UNUserNotificationCenter banner and return.
+    /// Must be called from a process whose executable lives inside a .app bundle
+    /// so macOS can associate the notification with a stable CFBundleIdentifier.
+    pub fn send(title: &str, body: &str) {
+        use std::sync::atomic::Ordering;
+        unsafe {
+            let app = msg0(cls(b"NSApplication\0"), sel(b"sharedApplication\0"));
+
+            let un = cls(b"UNUserNotificationCenter\0");
+            if un.is_null() { return; }
+            let center = msg0(un, sel(b"currentNotificationCenter\0"));
+            if center.is_null() { return; }
+
+            let run_loop = msg0(cls(b"NSRunLoop\0"), sel(b"currentRunLoop\0"));
+
+            // --- Phase 1: check current authorization status ---
+            AUTH_RESULT.store(-1, Ordering::Release);
+            let settings_block = Block1 {
+                isa:        &_NSConcreteStackBlock as *const c_void,
+                flags:      0, reserved: 0,
+                invoke:     settings_invoke,
+                descriptor: &BLOCK_DESC,
+            };
+            msg1v(center,
+                  sel(b"getNotificationSettingsWithCompletionHandler:\0"),
+                  &settings_block as *const Block1 as Id);
+            let start = std::time::Instant::now();
+            while AUTH_RESULT.load(Ordering::Acquire) < 0 {
+                if start.elapsed().as_millis() > 500 { break; }
+                let tick = msg1f(cls(b"NSDate\0"),
+                                 sel(b"dateWithTimeIntervalSinceNow:\0"), 0.05);
+                msg1v(run_loop, sel(b"runUntilDate:\0"), tick);
+            }
+
+            let settings_status = AUTH_RESULT.load(Ordering::Acquire);
+            if settings_status == 0 { return; } // denied — nothing to do
+
+            if settings_status != 2 {
+                // notDetermined: switch to a regular (foreground) activation policy so
+                // macOS will show the notification permission dialog. On Sequoia, apps with
+                // NSApplicationActivationPolicyAccessory (LSUIElement) are blocked from
+                // receiving the permission prompt.
+                // NSApplicationActivationPolicyRegular = 0
+                msg1n(app, sel(b"setActivationPolicy:\0"), 0);
+
+                AUTH_RESULT.store(-1, Ordering::Release);
+                let auth_block = Block {
+                    isa:        &_NSConcreteStackBlock as *const c_void,
+                    flags:      0, reserved: 0,
+                    invoke:     auth_invoke,
+                    descriptor: &BLOCK_DESC,
+                };
+                msg2nv(center,
+                       sel(b"requestAuthorizationWithOptions:completionHandler:\0"),
+                       7, &auth_block as *const Block as Id);
+
+                // Wait up to 30s for the user to click Allow/Don't Allow.
+                let start = std::time::Instant::now();
+                while AUTH_RESULT.load(Ordering::Acquire) < 0 {
+                    if start.elapsed().as_secs() > 30 { break; }
+                    let tick = msg1f(cls(b"NSDate\0"),
+                                     sel(b"dateWithTimeIntervalSinceNow:\0"), 0.1);
+                    msg1v(run_loop, sel(b"runUntilDate:\0"), tick);
+                }
+
+                // Restore accessory (no Dock icon) policy.
+                // NSApplicationActivationPolicyAccessory = 1
+                msg1n(app, sel(b"setActivationPolicy:\0"), 1);
+
+                if AUTH_RESULT.load(Ordering::Acquire) != 1 { return; }
+            }
+
+            // --- Phase 2: post the notification ---
+
+            // Remove any existing notification for this project first.  If we simply
+            // post with the same identifier macOS treats it as a "replacement" and
+            // plays a system ding regardless of the notification's own sound setting
+            // or System Settings > Notifications > Play Sound.  Removing silently
+            // first, then posting fresh, avoids the replacement sound.
+            let proj_id  = format!("meatbag-nudge.{}", title);
+            let id_str   = nsstring(&proj_id);
+            let id_array = msg1id(cls(b"NSArray\0"), sel(b"arrayWithObject:\0"), id_str);
+            msg1v(center, sel(b"removeDeliveredNotificationsWithIdentifiers:\0"), id_array);
+            // Brief spin so the removal XPC round-trip completes before we post.
+            let rm_tick = msg1f(cls(b"NSDate\0"),
+                                sel(b"dateWithTimeIntervalSinceNow:\0"), 0.05);
+            msg1v(run_loop, sel(b"runUntilDate:\0"), rm_tick);
+
+            let content = msg0(cls(b"UNMutableNotificationContent\0"), sel(b"new\0"));
+            msg1v(content, sel(b"setTitle:\0"), nsstring(title));
+            msg1v(content, sel(b"setBody:\0"),  nsstring(body));
+            // threadIdentifier groups notifications by project in Notification Center.
+            msg1v(content, sel(b"setThreadIdentifier:\0"), nsstring(title));
+            // No notification sound — afplay already handles audio in the main process.
+
+            let ident = nsstring(&proj_id);
+            let request = msg3(
+                cls(b"UNNotificationRequest\0"),
+                sel(b"requestWithIdentifier:content:trigger:\0"),
+                ident, content, std::ptr::null_mut(),
+            );
+            msg2v(center,
+                  sel(b"addNotificationRequest:withCompletionHandler:\0"),
+                  request, std::ptr::null_mut());
+
+            // Spin briefly so UNUserNotificationCenter can deliver the notification over XPC.
+            let deadline = msg1f(cls(b"NSDate\0"),
+                                 sel(b"dateWithTimeIntervalSinceNow:\0"), 1.0);
+            msg1v(run_loop, sel(b"runUntilDate:\0"), deadline);
+        }
+    }
+
+    /// Remove a delivered notification for `title` from Notification Center.
+    pub fn remove(title: &str) {
+        remove_impl(title, false);
+    }
+
+    /// Like remove(), but logs each step to /tmp/meatbag-remove-debug.txt.
+    pub fn remove_debug(title: &str) {
+        remove_impl(title, true);
+    }
+
+    fn remove_impl(title: &str, debug: bool) {
+        unsafe {
+            let bundle = msg0(cls(b"NSBundle\0"), sel(b"mainBundle\0"));
+            let bundle_id  = msg0(bundle, sel(b"bundleIdentifier\0"));
+            let bundle_path = msg0(bundle, sel(b"bundlePath\0"));
+            if debug {
+                log(&format!("remove: bundlePath={} bundleId={}",
+                    nsstring_to_rust(bundle_path), nsstring_to_rust(bundle_id)));
+            }
+
+            let un = cls(b"UNUserNotificationCenter\0");
+            if un.is_null() {
+                if debug { log("remove: UNUserNotificationCenter class is null"); }
+                return;
+            }
+            let center = msg0(un, sel(b"currentNotificationCenter\0"));
+            if center.is_null() {
+                if debug { log("remove: center is null"); }
+                return;
+            }
+
+            let proj_id  = format!("meatbag-nudge.{}", title);
+            if debug { log(&format!("remove: removing identifier={}", proj_id)); }
+            let id_str   = nsstring(&proj_id);
+            let id_array = msg1id(cls(b"NSArray\0"), sel(b"arrayWithObject:\0"), id_str);
+            msg1v(center, sel(b"removeDeliveredNotificationsWithIdentifiers:\0"), id_array);
+
+            // Spin long enough for the XPC removal to complete before the process exits.
+            let run_loop = msg0(cls(b"NSRunLoop\0"), sel(b"currentRunLoop\0"));
+            let tick = msg1f(cls(b"NSDate\0"),
+                             sel(b"dateWithTimeIntervalSinceNow:\0"), 0.5);
+            msg1v(run_loop, sel(b"runUntilDate:\0"), tick);
+            if debug { log("remove: done"); }
+        }
+    }
+}
+
+/// Walk up from `exe` to find the enclosing `.app` bundle root, if any.
+#[cfg(target_os = "macos")]
+fn find_app_bundle(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut path = exe.to_path_buf();
+    loop {
+        if path.extension().map_or(false, |e| e == "app") {
+            return Some(path);
+        }
+        if !path.pop() {
+            return None;
+        }
+    }
+}
+
+/// Detect a running IDE and bring the window for `path` to the foreground.
+/// Uses each IDE's CLI with `--reuse-window` so it targets the specific
+/// project window rather than the most-recently-active one.
+/// Run via a login shell so the user's PATH (where `cursor`/`code` live) is available.
+#[cfg(target_os = "macos")]
+fn focus_ide_at(path: &str) {
+    // (pgrep process name, CLI command, supports --reuse-window)
+    let candidates: &[(&str, &str, bool)] = &[
+        ("Cursor",   "cursor",   true),
+        ("Code",     "code",     true),
+        ("Windsurf", "windsurf", true),
+        ("zed",      "zed",      false),
+    ];
+    // Shell-safe single-quote escaping for the path argument.
+    let path_escaped = path.replace('\'', "'\\''");
+    for &(proc_name, cli, reuse) in candidates {
+        let running = Command::new("pgrep")
+            .args(["-x", proc_name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if running {
+            let cmd = if reuse {
+                format!("{} --reuse-window '{}'", cli, path_escaped)
+            } else {
+                format!("{} '{}'", cli, path_escaped)
+            };
+            let _ = Command::new("sh")
+                .args(["-l", "-c", &cmd])
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+                .spawn();
+            return;
+        }
+    }
+}
+
+/// Send a macOS Notification Center banner.
+///
+/// Launches the bundle via `open -a` (LaunchServices) so macOS registers
+/// it as a proper app — required on Sequoia for UNUserNotificationCenter
+/// to show the permission prompt and appear in Notification settings.
+///
+/// Falls back to `osascript` for development / non-bundle runs.
+#[cfg(target_os = "macos")]
+fn send_macos_notification(title: &str, body: &str) {
+    // Record this project's path so a notification click can focus the right IDE window.
+    // Stored per-project so multiple active notifications each know their own path.
+    {
+        let cwd = env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let dir = state_dir();
+        let _ = fs::create_dir_all(&dir);
+        // Sanitise title for use as a filename component.
+        let safe: String = title.chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        let _ = fs::write(PathBuf::from(&dir).join(format!("notify-path-{}", safe)), &cwd);
+    }
+
+    let exe = std::env::current_exe()
+        .and_then(|p| fs::canonicalize(p))
+        .unwrap_or_default();
+
+    if let Some(bundle) = find_app_bundle(&exe) {
+        let bundle_str = bundle.to_string_lossy();
+        // -n  = new instance even if already running
+        // -g  = don't bring app to foreground
+        spawn_detached("open", &[
+            "-a", bundle_str.as_ref(),
+            "-n", "-g",
+            "--args", "_notify", title, body,
+        ]);
+    } else {
+        // Non-bundle (e.g. cargo run) — fall back to osascript
+        let safe_body  = body .replace('\\', "\\\\").replace('"', "\\\"");
+        let safe_title = title.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            safe_body, safe_title,
+        );
+        let _ = Command::new("osascript")
+            .args(["-e", &script])
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .spawn();
+    }
+}
+
+/// Remove the delivered notification for `title` and clean up its state file.
+/// The hook binary resolves via symlink to the binary inside the .app bundle,
+/// so NSBundle.mainBundle already has the correct bundle ID — no subprocess needed.
+#[cfg(target_os = "macos")]
+fn dismiss_macos_notification(state_dir: &str, title: &str) {
+    // Spawn removal as a subprocess using the fully-resolved exe path.
+    // When the hook binary is invoked via a symlink (e.g. ~/bin/meatbag-nudge),
+    // NSBundle sees ~/bin as the bundle root and gets a nil bundleIdentifier, so
+    // UNUserNotificationCenter can't touch notifications posted by the .app bundle.
+    // Spawning via the real path puts the process inside the .app, fixing the lookup.
+    let exe = std::env::current_exe()
+        .and_then(|p| fs::canonicalize(p))
+        .unwrap_or_default();
+    spawn_detached(&exe.to_string_lossy(), &["_remove_notify", title]);
+
+    let safe: String = title.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let _ = fs::remove_file(PathBuf::from(state_dir).join(format!("notify-path-{}", safe)));
+}
+
+// ---------------------------------------------------------------------------
 // State management
 // ---------------------------------------------------------------------------
 
@@ -993,7 +1618,7 @@ fn run_escalation(delay_secs: u64) {
         }
     }
 
-    // Default escalation: flash screen + play sound
+    // Default escalation: flash (Windows) / notification banner (macOS) + play sound
     #[cfg(windows)]
     {
         let flash_count: u32 = env::var("MEATBAG_FLASH_COUNT")
@@ -1001,6 +1626,11 @@ fn run_escalation(delay_secs: u64) {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1);
         win32::flash_screen(flash_count);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let proj = project_name();
+        send_macos_notification(&proj, &notification_body("escalation"));
     }
 
     let sound_repeat: u32 = env::var("MEATBAG_ESCALATION_REPEAT")
@@ -1277,6 +1907,51 @@ fn main() {
             win32::flash_screen(count);
             return;
         }
+        #[cfg(target_os = "macos")]
+        "_notify" => {
+            let title = args.get(2).map(|s| s.as_str()).unwrap_or("Claude Code");
+            let body  = args.get(3).map(|s| s.as_str()).unwrap_or("");
+            macos_notify::send(title, body);
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        "_remove_notify" => {
+            let title = args.get(2).map(|s| s.as_str()).unwrap_or("");
+            if !title.is_empty() {
+                macos_notify::remove(title);
+            }
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        "_remove_notify_debug" => {
+            let title = args.get(2).map(|s| s.as_str()).unwrap_or("test");
+            let _ = std::fs::write("/tmp/meatbag-remove-debug.txt", "");
+            macos_notify::remove_debug(title);
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        "_notify_body" => {
+            if args.iter().any(|a| a == "--fun") {
+                env::set_var("MEATBAG_FUN_MESSAGES", "1");
+            }
+            let fun_val = env::var("MEATBAG_FUN_MESSAGES").unwrap_or_else(|_| "(not set)".into());
+            let fun_bool = fun_val == "1" || fun_val.to_lowercase() == "true";
+            let idx = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos() as usize;
+            println!("MEATBAG_FUN_MESSAGES={}", fun_val);
+            println!("fun={} idx={} idx%20={}", fun_bool, idx, idx % 20);
+            println!("done:       {}", notification_body("done"));
+            println!("attention:  {}", notification_body("attention"));
+            println!("escalation: {}", notification_body("escalation"));
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        "_notify_debug" => {
+            macos_notify::send_debug();
+            return;
+        }
         _ => {}
     }
 
@@ -1319,6 +1994,12 @@ fn main() {
     }
     if let Some(v) = parse_flag(&args, "--focus-cmd") {
         env::set_var("MEATBAG_FOCUS_CMD", &v);
+    }
+    if let Some(v) = parse_flag(&args, "--project") {
+        env::set_var("MEATBAG_PROJECT", &v);
+    }
+    if args.iter().any(|a| a == "--fun") {
+        env::set_var("MEATBAG_FUN_MESSAGES", "1");
     }
 
     let dir = state_dir();
@@ -1363,8 +2044,19 @@ fn main() {
             capture_focus_target();
             if focus_at("notification") { focus_window(); }
             play_sound(&dir, cooldown);
-            if message_is_question(&input) {
+            let is_question = message_is_question(&input);
+            if is_question {
                 start_escalation(&dir, stop_delay);
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let proj = project_name();
+                let body = if is_question {
+                    notification_body("attention")
+                } else {
+                    notification_body("done")
+                };
+                send_macos_notification(&proj, &body);
             }
         }
         "permission" => {
@@ -1372,12 +2064,27 @@ fn main() {
             if focus_at("notification") { focus_window(); }
             play_sound(&dir, cooldown);
             start_escalation(&dir, permission_delay);
+            #[cfg(target_os = "macos")]
+            {
+                let proj = project_name();
+                send_macos_notification(&proj, &notification_body("attention"));
+            }
         }
-        "prompt" => handle_prompt(&dir),
-        "cancel" => cancel_pending(&dir),
+        "prompt" => {
+            #[cfg(target_os = "macos")]
+            dismiss_macos_notification(&dir, &project_name());
+            handle_prompt(&dir);
+        }
+        "cancel" => {
+            cancel_pending(&dir);
+            #[cfg(target_os = "macos")]
+            dismiss_macos_notification(&dir, &project_name());
+        }
         "dismiss" => {
             record_interaction(&dir);
             cancel_pending(&dir);
+            #[cfg(target_os = "macos")]
+            dismiss_macos_notification(&dir, &project_name());
         }
         "install-hooks" => {
             process::exit(run_install_hooks(&args));
@@ -1408,6 +2115,41 @@ fn main() {
             eprintln!("Logged to {}", log.display());
         }
         _ => {
+            // When macOS opens our .app bundle because the user clicked a notification
+            // banner, the binary runs with no arguments.  Detect this case (no args +
+            // inside a .app bundle) and focus the IDE for the last notified project.
+            #[cfg(target_os = "macos")]
+            if action.is_empty() {
+                let exe = env::current_exe()
+                    .and_then(|p| fs::canonicalize(p))
+                    .unwrap_or_default();
+                if find_app_bundle(&exe).is_some() {
+                    // Pick the most-recently-modified notify-path-* file — that's
+                    // the notification the user most likely just clicked.
+                    let dir = PathBuf::from(state_dir());
+                    let best = fs::read_dir(&dir).ok().and_then(|entries| {
+                        entries
+                            .filter_map(|e| e.ok())
+                            .filter(|e| e.file_name().to_string_lossy().starts_with("notify-path-"))
+                            .filter_map(|e| {
+                                let mtime = e.metadata().ok()?.modified().ok()?;
+                                Some((mtime, e.path()))
+                            })
+                            .max_by_key(|(mtime, _)| *mtime)
+                            .map(|(_, p)| p)
+                    });
+                    if let Some(path_file) = best {
+                        if let Ok(path) = fs::read_to_string(&path_file) {
+                            let path = path.trim();
+                            if !path.is_empty() {
+                                focus_ide_at(path);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+
             eprintln!("Usage: meatbag-nudge <action> [options]");
             eprintln!();
             eprintln!("Actions:");

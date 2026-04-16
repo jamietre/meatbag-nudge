@@ -156,10 +156,10 @@ configure_hooks() {
     fi
 
     # Prompt for settings
-    local cooldown stop_delay perm_delay flash_count repeat_count focus_choice
+    local cooldown stop_delay perm_delay flash_count repeat_count focus_choice fun_messages
     if $USE_DEFAULTS; then
         cooldown=30 stop_delay=300 perm_delay=30 flash_count=1 repeat_count=1
-        focus_choice="notification"
+        focus_choice="notification" fun_messages=true
     else
         echo ""
         echo "Configure notification settings (press Enter for defaults):"
@@ -182,6 +182,13 @@ configure_hooks() {
         echo "  Focus the terminal window when a nudge fires?"
         echo "  Options: none, notification, escalation, both"
         prompt_value "Focus on" "notification" focus_choice
+        echo ""
+        read -rp "  Include fun message variants? [Y/n]: " fun_choice </dev/tty
+        if [[ "$fun_choice" =~ ^[Nn] ]]; then
+            fun_messages=false
+        else
+            fun_messages=true
+        fi
     fi
 
     # Normalise focus_choice -> --focus flag
@@ -210,9 +217,14 @@ configure_hooks() {
         fi
     fi
 
+    # Write the settings file so the binary picks it up at runtime without
+    # baking the value into the hook command strings.
     # Build hook commands with CLI flags
-    local stop_cmd="\"$binary\" stop --delay $stop_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}"
-    local perm_cmd="\"$binary\" permission --delay $perm_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}"
+    local fun_flag=""
+    if $fun_messages; then fun_flag=" --fun"; fi
+
+    local stop_cmd="\"$binary\" stop --delay $stop_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}${fun_flag}"
+    local perm_cmd="\"$binary\" permission --delay $perm_delay --cooldown $cooldown --flash $flash_count --repeat $repeat_count${player_flag}${focus_flag}${fun_flag}"
     local cancel_cmd="\"$binary\" cancel"
     local dismiss_cmd="\"$binary\" dismiss"
     local prompt_cmd="\"$binary\" prompt"
@@ -364,6 +376,133 @@ remove_hooks() {
     "$binary" remove-hooks
 }
 
+install_bundle_macos() {
+    local binary_src="$1"
+    local bundle_dir="${HOME}/Applications/${BINARY_NAME}.app"
+    local contents="${bundle_dir}/Contents"
+    local macos_dir="${contents}/MacOS"
+
+    echo "Creating .app bundle: ${bundle_dir}"
+    mkdir -p "${macos_dir}"
+
+    cat > "${contents}/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>  <string>org.est.mostly-water-notifier</string>
+  <key>CFBundleName</key>        <string>${BINARY_NAME}</string>
+  <key>CFBundleDisplayName</key> <string>Mostly Water Notifier</string>
+  <key>CFBundleVersion</key>     <string>1.0</string>
+  <key>CFBundlePackageType</key> <string>APPL</string>
+  <key>NSPrincipalClass</key>    <string>NSApplication</string>
+  <key>LSUIElement</key>         <true/>
+</dict>
+</plist>
+PLIST
+
+    local bundle_binary="${macos_dir}/${BINARY_NAME}"
+    cp "${binary_src}" "${bundle_binary}"
+    chmod +x "${bundle_binary}"
+
+    # Sign the bundle. Developer ID signing is required on macOS 15+ (Sequoia) for
+    # UNUserNotificationCenter authorization prompts to appear. Ad-hoc signing causes
+    # automatic denial. Try to find a Developer ID Application certificate.
+    if command -v codesign &>/dev/null; then
+        local dev_id
+        dev_id=$(security find-identity -v -p codesigning 2>/dev/null \
+            | grep "Developer ID Application" \
+            | head -1 \
+            | sed 's/.*"\(Developer ID Application:[^"]*\)".*/\1/')
+
+        if [ -n "$dev_id" ]; then
+            echo "Signing bundle with: $dev_id"
+            codesign --force --deep --sign "$dev_id" "${bundle_dir}" 2>/dev/null || true
+        else
+            echo "Signing bundle (ad-hoc — no Developer ID certificate found)..."
+            echo "NOTE: On macOS 15+ (Sequoia), notification permission prompts may not appear"
+            echo "      with ad-hoc signing. If notifications don't work, sign with a Developer ID:"
+            echo "        codesign --force --deep --sign \"Developer ID Application: Your Name\" \\"
+            echo "            ${bundle_dir}"
+            codesign --force --deep --sign - "${bundle_dir}" 2>/dev/null || true
+        fi
+    fi
+
+    # Point the user's binary location at the bundle binary
+    mkdir -p "${INSTALL_DIR}"
+    ln -sf "${bundle_binary}" "${BINARY}"
+
+    echo "Installed: ${bundle_binary}"
+    echo "Linked:    ${BINARY} → ${bundle_binary}"
+}
+
+install_prebuilt_bundle_macos() {
+    local downloader=""
+    if command -v curl &>/dev/null; then
+        downloader="curl"
+    elif command -v wget &>/dev/null; then
+        downloader="wget"
+    else
+        echo "ERROR: curl or wget is required to download releases." >&2
+        exit 1
+    fi
+
+    local api_url="https://api.github.com/repos/${REPO}/releases/latest"
+    local release_json
+    if [ "$downloader" = "curl" ]; then
+        release_json=$(curl -fsSL "$api_url")
+    else
+        release_json=$(wget -qO- "$api_url")
+    fi
+
+    local tag
+    tag=$(echo "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
+    if [ -z "$tag" ]; then
+        echo "ERROR: Could not determine latest release tag. Check your internet connection" >&2
+        echo "or visit https://github.com/${REPO}/releases to download manually." >&2
+        exit 1
+    fi
+
+    echo "Latest release: $tag"
+
+    local asset_name="meatbag-nudge-macos-universal-app.tar.gz"
+    local download_url="https://github.com/${REPO}/releases/download/${tag}/${asset_name}"
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    local archive="${tmp_dir}/${asset_name}"
+
+    echo "Downloading $asset_name..."
+    if [ "$downloader" = "curl" ]; then
+        curl -fsSL -o "$archive" "$download_url"
+    else
+        wget -qO "$archive" "$download_url"
+    fi
+
+    tar -xzf "$archive" -C "$tmp_dir"
+
+    local app_src="${tmp_dir}/meatbag-nudge.app"
+    if [ ! -d "$app_src" ]; then
+        echo "ERROR: .app bundle not found in archive. Contents:" >&2
+        ls "$tmp_dir" >&2
+        exit 1
+    fi
+
+    local bundle_dir="${HOME}/Applications/${BINARY_NAME}.app"
+    mkdir -p "${HOME}/Applications"
+    rm -rf "$bundle_dir"
+    mv "$app_src" "$bundle_dir"
+
+    local bundle_binary="${bundle_dir}/Contents/MacOS/${BINARY_NAME}"
+    chmod +x "$bundle_binary"
+
+    mkdir -p "${INSTALL_DIR}"
+    ln -sf "${bundle_binary}" "${BINARY}"
+
+    echo "Installed: ${bundle_dir}"
+    echo "Linked:    ${BINARY} → ${bundle_binary}"
+}
+
 build_from_source() {
     local script_dir
     script_dir="$(cd "$(dirname "$0")" && pwd)"
@@ -421,8 +560,8 @@ download_release() {
     if [ "$PLATFORM" = "windows" ]; then
         asset_name="meatbag-nudge-windows-x86_64.zip"
     elif [ "$PLATFORM" = "macos" ]; then
-        local arch; arch="$(uname -m)"  # arm64 or x86_64
-        asset_name="meatbag-nudge-macos-${arch}.tar.gz"
+        # The macOS release asset is a universal .app bundle; extract the binary from within it
+        asset_name="meatbag-nudge-macos-universal-app.tar.gz"
     else
         asset_name="meatbag-nudge-linux-x86_64.tar.gz"
     fi
@@ -446,7 +585,14 @@ download_release() {
         unzip -q "$archive" -d "$tmp_dir" >&2
     fi
 
-    local binary="${tmp_dir}/${BINARY_NAME}${EXE_EXT}"
+    # For macOS the archive contains an .app bundle; pull the binary out of it
+    local binary
+    if [ "$PLATFORM" = "macos" ]; then
+        binary="${tmp_dir}/meatbag-nudge.app/Contents/MacOS/${BINARY_NAME}"
+    else
+        binary="${tmp_dir}/${BINARY_NAME}${EXE_EXT}"
+    fi
+
     if [ ! -f "$binary" ]; then
         echo "ERROR: Binary not found in archive. Contents:" >&2
         ls "$tmp_dir" >&2
@@ -523,28 +669,68 @@ if $UNINSTALL; then
     echo "Uninstalling meatbag-nudge..."
     remove_hooks "$BINARY"
     rm -f "$BINARY"
+    if [ "$PLATFORM" = "macos" ]; then
+        bundle_dir="${HOME}/Applications/${BINARY_NAME}.app"
+        if [ -d "$bundle_dir" ]; then
+            rm -rf "$bundle_dir"
+            echo "Removed bundle: $bundle_dir"
+        fi
+    fi
     echo "Done."
     exit 0
 fi
 
-# Get the binary
+# For macOS, decide on bundle install before downloading anything
+INSTALL_MACOS_BUNDLE=false
+if [ "$PLATFORM" = "macos" ]; then
+    if $USE_DEFAULTS; then
+        INSTALL_MACOS_BUNDLE=true
+    else
+        echo ""
+        echo "Native macOS notification banners require a .app bundle so meatbag-nudge"
+        echo "appears in System Settings → Notifications. The pre-built release bundle"
+        echo "is signed and notarized so the permission dialog appears on macOS 15+."
+        echo ""
+        read -rp "  Install native macOS notification banners? [Y/n]: " notif_choice </dev/tty
+        if [[ ! "$notif_choice" =~ ^[Nn] ]]; then
+            INSTALL_MACOS_BUNDLE=true
+        fi
+    fi
+fi
+
+# Get and install the binary
 if $BUILD; then
+    # Build from source, then install locally (with local signing)
     binary_path=$(build_from_source)
+    if $INSTALL_MACOS_BUNDLE; then
+        install_bundle_macos "$binary_path"
+    else
+        echo "Installing to $INSTALL_DIR..."
+        mkdir -p "$INSTALL_DIR"
+        if [ -f "$BINARY" ]; then
+            mv "$BINARY" "${BINARY}.old" 2>/dev/null || true
+        fi
+        cp "$binary_path" "$BINARY"
+        chmod +x "$BINARY"
+        rm -f "${BINARY}.old"
+        echo "Installed: $BINARY"
+    fi
+elif $INSTALL_MACOS_BUNDLE; then
+    # Download the pre-signed universal .app bundle from GitHub releases
+    install_prebuilt_bundle_macos
 else
+    # Download bare binary (or extract from universal app for macOS without bundle)
     binary_path=$(download_release)
+    echo "Installing to $INSTALL_DIR..."
+    mkdir -p "$INSTALL_DIR"
+    if [ -f "$BINARY" ]; then
+        mv "$BINARY" "${BINARY}.old" 2>/dev/null || true
+    fi
+    cp "$binary_path" "$BINARY"
+    chmod +x "$BINARY"
+    rm -f "${BINARY}.old"
+    echo "Installed: $BINARY"
 fi
-
-# Install binary
-echo "Installing to $INSTALL_DIR..."
-mkdir -p "$INSTALL_DIR"
-if [ -f "$BINARY" ]; then
-    mv "$BINARY" "${BINARY}.old" 2>/dev/null || true
-fi
-cp "$binary_path" "$BINARY"
-chmod +x "$BINARY"
-rm -f "${BINARY}.old"
-
-echo "Installed: $BINARY"
 
 # Verify on PATH
 if ! command -v "$BINARY_NAME" &>/dev/null; then
@@ -557,6 +743,14 @@ fi
 # Configure hooks
 if ! $NO_HOOKS; then
     configure_hooks "$BINARY"
+fi
+
+# On macOS with bundle installed, trigger a test notification to request permission
+if $INSTALL_MACOS_BUNDLE; then
+    echo ""
+    echo "Requesting notification permission..."
+    echo "(macOS may show a dialog asking to allow notifications — click Allow)"
+    "$BINARY" _notify "Claude Notify" "Notifications are working!" 2>/dev/null || true
 fi
 
 echo ""
